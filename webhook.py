@@ -37,6 +37,7 @@ from glossary_builder.llm import LLMClient
 from glossary_builder.loader import Message
 from glossary_builder.single_classifier import classify_single_message
 from glossary_builder.geo_pipeline import process_geo
+from PSP_providers_classifier.psp_provider_classifier import run_psp_provider_classifier
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -261,9 +262,10 @@ async def _persist(group_id: Optional[int], result: dict) -> dict:
             result["geo"] = await process_geo(
                 message_id=result.get("message_id"),
                 raw_geo_list=result.get("geo") or [],
+                payment_methods=result.get("payment_methods_mentioned") or [],
                 conn=conn,
             )
-            await conn.execute(
+            row = await conn.fetchrow(
                 _UPSERT_SQL,
                 group_id,
                 result.get("message_id"),
@@ -290,6 +292,7 @@ async def _persist(group_id: Optional[int], result: dict) -> dict:
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
+        result["db_id"] = row["id"] if row else None
 
     except Exception as exc:  # noqa: BLE001
         error_msg = str(exc)
@@ -350,7 +353,21 @@ async def classify(body: ClassifyRequest) -> dict:
                 timestamp=body.timestamp,
                 context=context,
             )
-            await _persist(body.group_id, result)
+            result = await _persist(body.group_id, result)
+
+            is_lead = result.get("is_lead")
+            verdict = result.get("verdict")
+
+            if (not is_lead or verdict == "MISTAKE") and result.get("db_write_status") == "ok":
+                print("running psp_provider_classifier")
+                await run_psp_provider_classifier(
+                    text=body.text,
+                    source_lead_id=result.get("db_id"),
+                    message_id=body.message_id,
+                    username=body.username,
+                    timestamp=body.timestamp,
+                    conn_pool=_state.pool
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error("Background classify failed for message_id=%s: %s", body.message_id, exc)
 

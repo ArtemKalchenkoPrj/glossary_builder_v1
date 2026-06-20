@@ -1,14 +1,19 @@
 """Geo normalization and expansion pipeline.
 
-Three-stage pipeline that runs after the classifier extracts a raw geo list:
+Pipeline that runs after the classifier extracts a raw geo list:
 
-    Stage 1  load_maps()         — fetch normalization + expansion dicts from DB
-    Stage 2  _pre_normalize()    — lowercase + strip every raw value
-    Stage 3  normalize_geo()     — map raw values to canonical codes via norm_map;
-                                   unknown values are logged to geo_unknown_values
-    Stage 4  expand_geo()        — expand canonical codes to child codes via expansion_map
+    Stage 1  load_maps()           — fetch normalization + expansion dicts from DB
+    Stage 2  _pre_normalize()      — lowercase + strip every raw value
+    Stage 3  normalize_geo()       — map raw values to canonical codes via norm_map;
+                                     unknown values are logged to geo_unknown_values
+    Stage 4  expand_geo()          — expand canonical codes to child codes via expansion_map
+    Stage 5  apply_payment_geo()   — add geo codes implied by payment methods
+                                     (e.g. "монобанк" -> "UA"), deduplicated.
+                                     Runs AFTER expand_geo — payment-derived codes
+                                     are NOT themselves expanded.
 
-Public entry point: process_geo(message_id, raw_geo_list, conn) -> list[str]
+Public entry point:
+    process_geo(message_id, raw_geo_list, payment_methods, conn) -> list[str]
 
 Intended to be called from webhook._persist() after classification and before
 the DB write, replacing result["geo"] with the processed list.
@@ -175,20 +180,44 @@ def expand_geo(
     return expanded
 
 
-## НЕ ТЕСТУВАЛОСЯ - ПОТЕСТУВАТИ ПЕРЕД ДОДАВАННЯМ НА ДРОПЛЕТ
+# ---------------------------------------------------------------------------
+# Stage 5 — derive geo from payment methods
+# ---------------------------------------------------------------------------
+
 async def load_payment_geo_map(conn: asyncpg.Connection) -> dict[str, str]:
+    """Fetch the payment_method -> geo_code mapping from the DB.
+
+    Returns:
+        {payment_method_lowercase: geo_code}
+        e.g. {"монобанк": "UA", "qiwi": "RU"}
+    """
     rows = await conn.fetch("SELECT payment_method, geo_code FROM payment_geo_map")
     return {row["payment_method"]: row["geo_code"] for row in rows}
+
 
 async def apply_payment_geo(
     geo_list: list[str],
     payment_methods: list[str],
     payment_geo_map: dict[str, str],
 ) -> list[str]:
-    """Додає гео-коди асоційовані з платіжними методами до geo_list.
+    """Append geo codes implied by payment methods, deduplicated.
 
-    Для кожного методу в payment_methods шукає відповідний geo_code
-    в payment_geo_map і додає його до geo_list, якщо ще не присутній.
+    For each method in payment_methods:
+    - Lowercase + strip the method name.
+    - Look it up in payment_geo_map.
+    - Found and not already present in geo_list → append the geo code.
+
+    Runs AFTER expand_geo: codes added here are already canonical
+    (e.g. "UA") and are NOT themselves run through expand_geo.
+
+    Args:
+        geo_list:         Geo codes after Stage 3+4 (normalize + expand).
+        payment_methods:  Payment method values from the classifier,
+                           e.g. ["visa", "монобанк"].
+        payment_geo_map:  Mapping dict loaded by load_payment_geo_map().
+
+    Returns:
+        geo_list with any payment-derived codes appended, no duplicates.
     """
     result = list(geo_list)
     seen = set(result)
@@ -202,6 +231,7 @@ async def apply_payment_geo(
 
     return result
 
+
 # ---------------------------------------------------------------------------
 # Stage 6 — main entry point
 # ---------------------------------------------------------------------------
@@ -209,36 +239,45 @@ async def apply_payment_geo(
 async def process_geo(
     message_id: Optional[int],
     raw_geo_list: list[str],
+    payment_methods: list[str],
     conn: asyncpg.Connection,
 ) -> list[str]:
     """Run the full geo pipeline for one message.
 
     Steps:
-        1. Load norm_map and expansion_map from the DB.
+        1. Load norm_map, expansion_map, payment_geo_map from the DB.
         2. Normalize each raw value (lowercase + strip).  [inside normalize_geo]
         3. Map to canonical codes; log unknowns to geo_unknown_values.
         4. Expand canonical codes using expansion_map.
+        5. Append geo codes implied by payment_methods, deduplicated.
 
     Args:
-        message_id:   ID of the message; forwarded to normalize_geo for logging.
-        raw_geo_list: Raw geo list from the classifier, e.g. ["KZ", "Росія", "EU"].
-        conn:         Active asyncpg connection (caller owns the lifecycle).
+        message_id:       ID of the message; forwarded to normalize_geo for logging.
+        raw_geo_list:      Raw geo list from the classifier, e.g. ["KZ", "Росія", "EU"].
+        payment_methods:   Payment methods from the classifier,
+                           e.g. ["visa", "монобанк"]. Pass [] if none.
+        conn:              Active asyncpg connection (caller owns the lifecycle).
 
     Returns:
         Processed geo list ready for the downstream filter step,
-        e.g. ["KZ", "RU", "EU", "AT", "BE", "PL", ...].
-        Returns an empty list if raw_geo_list is empty or None.
+        e.g. ["KZ", "RU", "EU", "AT", "BE", "PL", ..., "UA"].
+        Returns an empty list if both raw_geo_list and payment_methods
+        are empty/None.
     """
-    if not raw_geo_list:
+    if not raw_geo_list and not payment_methods:
         return []
 
     # Stage 1 — load mappings fresh from DB on every call.
     norm_map, expansion_map = await load_maps(conn)
+    payment_geo_map = await load_payment_geo_map(conn)
 
     # Stages 2 + 3 — pre-normalize then canonicalize.
-    canonical = await normalize_geo(raw_geo_list, norm_map, message_id, conn)
+    canonical = await normalize_geo(raw_geo_list or [], norm_map, message_id, conn)
 
     # Stage 4 — expand.
-    result = expand_geo(canonical, expansion_map)
+    expanded = expand_geo(canonical, expansion_map)
+
+    # Stage 5 — derive extra geo from payment methods.
+    result = await apply_payment_geo(expanded, payment_methods or [], payment_geo_map)
 
     return result

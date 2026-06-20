@@ -26,7 +26,7 @@ MOCK_RESULT = {
     "interest_level": "high",
     "vertical": ["igaming"],
     "geo": ["KZ", "RU", "Росія", "EU", "Европа", "Казахстан"],   # RU і Росія — навмисний дублікат для тесту
-    "payment_methods_mentioned": ["visa"],
+    "payment_methods_mentioned": ["visa", "монобанк"],           # монобанк -> має додати UA
     "evidence_quote": "тест",
     "rationale": "тест",
     "glossary_terms_seen": [],
@@ -43,13 +43,16 @@ async def main():
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
 
     async with pool.acquire() as conn:
-        # запускаємо пайплайн
+        # запускаємо пайплайн (нова сигнатура — додано payment_methods)
         processed_geo = await process_geo(
             message_id=MOCK_RESULT["message_id"],
             raw_geo_list=MOCK_RESULT["geo"],
+            payment_methods=MOCK_RESULT["payment_methods_mentioned"],
             conn=conn,
         )
         print(f"Оброблене гео: {processed_geo}")
+        assert "UA" in processed_geo, "очікував UA від монобанку, але його немає в результаті"
+        print("UA від payment_geo_map присутнє — стадія 5 спрацювала")
 
         # пишемо в БД
         await conn.execute("""
