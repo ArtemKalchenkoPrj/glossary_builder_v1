@@ -38,6 +38,7 @@ from glossary_builder.loader import Message
 from glossary_builder.single_classifier import classify_single_message
 from glossary_builder.geo_pipeline import process_geo
 from PSP_providers_classifier.psp_provider_classifier import run_psp_provider_classifier
+from Deduper.deduplication import is_duplicate
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -342,6 +343,11 @@ async def classify(body: ClassifyRequest) -> dict:
 
     async def _run():
         try:
+            async with _state.pool.acquire() as conn:
+                if await is_duplicate(body.username, body.text, body.timestamp, conn):
+                    print(f"[dedup] пропускаємо дублікат: username={body.username!r} message_id={body.message_id}")
+                    return
+
             result = await asyncio.to_thread(
                 classify_single_message,
                 text=body.text,
@@ -366,7 +372,7 @@ async def classify(body: ClassifyRequest) -> dict:
                     message_id=body.message_id,
                     username=body.username,
                     timestamp=body.timestamp,
-                    conn_pool=_state.pool
+                    conn_pool=_state.pool,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error("Background classify failed for message_id=%s: %s", body.message_id, exc)
