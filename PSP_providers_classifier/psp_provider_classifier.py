@@ -363,26 +363,26 @@ async def run_psp_provider_classifier(
         return
     print("[second_pass] step 0: старт, text =", text[:50])
 
-    # --- Step 1: context ----------------------------------------------------
-    print("[second_pass] step 1: пробую acquire() з conn_pool...")
+    # --- Step 1: keyword filter по оригінальному тексту ---------------------
+    hits = _keyword_hits(text)
+    print("[second_pass] step 1: keyword hits =", hits)
+    if hits == 0:
+        print("[second_pass] step 1: 0 збігів — вихід")
+        logger.debug("second_pass: no keyword hits, skipping message_id=%s", message_id)
+        return
+
+    # --- Step 2: context (тільки якщо пройшов keyword-фільтр) ---------------
+    print("[second_pass] step 2: пробую acquire() з conn_pool...")
     context_texts: list[str] = []
     try:
         async with conn_pool.acquire() as conn:
-            print("[second_pass] step 1: conn отримано, виконую SELECT...")
+            print("[second_pass] step 2: conn отримано, виконую SELECT...")
             context_texts = await _load_author_context(username, conn)
     except Exception as exc:
-        print(f"[second_pass] step 1: ПОМИЛКА при читанні контексту: {exc!r}")
+        print(f"[second_pass] step 2: ПОМИЛКА при читанні контексту: {exc!r}")
         raise
-    print("[second_pass] step 1: контекст завантажено, count =", len(context_texts))
+    print("[second_pass] step 2: контекст завантажено, count =", len(context_texts))
     combined_text = _build_combined_text(text, context_texts)
-
-    # --- Step 2: keyword filter ----------------------------------------------
-    hits = _keyword_hits(combined_text)
-    print("[second_pass] step 2: keyword hits =", hits)
-    if hits == 0:
-        print("[second_pass] step 2: 0 збігів — вихід")
-        logger.debug("second_pass: no keyword hits, skipping message_id=%s", message_id)
-        return
 
     # --- Step 3: LLM verification --------------------------------------------
     print("[second_pass] step 3: викликаю verify LLM, model =", _verify_model())
