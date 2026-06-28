@@ -22,7 +22,7 @@ import asyncpg
 _WINDOW = timedelta(hours=24)
 
 _SELECT_LAST_SQL = """
-SELECT text, classified_at
+SELECT id, text, classified_at
 FROM classified_messages_dirty
 WHERE username = $1
 ORDER BY classified_at DESC
@@ -31,38 +31,30 @@ LIMIT 1
 
 
 async def is_duplicate(
-    username: Optional[str],
-    text: str,
-    timestamp: Optional[datetime],
-    conn: asyncpg.Connection,
-) -> bool:
-    """Return True if this message is a duplicate of the author's last one
-    within a 24-hour sliding window.
+        username: Optional[str],
+        text: str,
+        timestamp: Optional[datetime],
+        conn: asyncpg.Connection,
+) -> tuple[bool, Optional[int]]:
+    """Returns (is_dup, original_id).
 
-    Args:
-        username:  Sender handle. If None, deduplication is skipped (False).
-        text:      Raw message text to compare.
-        timestamp: Message datetime. Falls back to utcnow() if None.
-        conn:      Active asyncpg connection.
-
-    Returns:
-        True  — duplicate, caller should silently ignore the message.
-        False — new or expired, caller should proceed with classification.
+    original_id — id рядка-оригіналу в classified_messages_dirty,
+    None якщо не дублікат.
     """
     if not username:
-        return False
+        return False, None
 
     text_norm = text.strip().lower()
     if not text_norm:
-        return False
+        return False, None
 
     row = await conn.fetchrow(_SELECT_LAST_SQL, username)
     if row is None:
-        return False
+        return False, None
 
     last_text = (row["text"] or "").strip().lower()
     if last_text != text_norm:
-        return False
+        return False, None
 
     last_time: datetime = row["classified_at"]
 
@@ -75,6 +67,6 @@ async def is_duplicate(
 
     delta = now - last_time
     if delta > _WINDOW:
-        return False
+        return False, None
 
-    return True
+    return True, row["id"]
