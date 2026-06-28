@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from Casino_platforms_classifier.casino_classifier import run_casino_classifier
 from glossary_builder.lead_extraction import LeadExtractionConfig, load_glossary
 from glossary_builder.lead_prompt_versions import BY_VERSION
 from glossary_builder.llm import LLMClient
@@ -344,8 +345,34 @@ async def classify(body: ClassifyRequest) -> dict:
     async def _run():
         try:
             async with _state.pool.acquire() as conn:
-                if await is_duplicate(body.username, body.text, body.timestamp, conn):
-                    print(f"[dedup] пропускаємо дублікат: username={body.username!r} message_id={body.message_id}")
+                is_dup, original_id = await is_duplicate(body.username, body.text, body.timestamp, conn)
+                if is_dup:
+                    print(f"[dedup] пропускаємо дублікат: username={body.username!r} original_id={original_id}")
+                    await conn.execute(
+                        _UPSERT_SQL,
+                        body.group_id,  # $1  group_id
+                        body.message_id,  # $2  message_id
+                        body.timestamp,  # $3  timestamp
+                        body.username,  # $4  username
+                        body.text,  # $5  text
+                        False,  # $6  is_lead — дублікат, не лід
+                        None,  # $7  confidence
+                        None,  # $8  lead_type
+                        None,  # $9  intent
+                        None,  # $10 interest_level
+                        json.dumps([]),  # $11 vertical
+                        json.dumps([]),  # $12 geo
+                        json.dumps([]),  # $13 payment_methods_mentioned
+                        None,  # $14 evidence_quote
+                        f"[deduplicated: copy of username={body.username!r} original_id={original_id}]",
+                        # $15 rationale
+                        json.dumps([]),  # $16 glossary_terms_seen
+                        None,  # $17 elapsed_ms
+                        None,  # $18 verdict
+                        None,  # $19 judge_reason
+                        "ok",  # $20 db_write_status
+                        None,  # $21 db_write_error
+                    )
                     return
 
             result = await asyncio.to_thread(
@@ -363,10 +390,15 @@ async def classify(body: ClassifyRequest) -> dict:
 
             is_lead = result.get("is_lead")
             verdict = result.get("verdict")
+            db_ok = result.get("db_write_status") == "ok"
 
-            if (not is_lead or verdict == "MISTAKE") and result.get("db_write_status") == "ok":
+            # Запускаємо secondary classifiers тільки якщо основний pipeline
+            # не знайшов ліда і запис у БД пройшов успішно
+            if (not is_lead or verdict == "MISTAKE") and db_ok:
+
+                # Спочатку перевіряємо чи це PSP-провайдер
                 print("running psp_provider_classifier")
-                await run_psp_provider_classifier(
+                psp_classified = await run_psp_provider_classifier(
                     text=body.text,
                     source_lead_id=result.get("db_id"),
                     message_id=body.message_id,
@@ -374,6 +406,20 @@ async def classify(body: ClassifyRequest) -> dict:
                     timestamp=body.timestamp,
                     conn_pool=_state.pool,
                 )
+
+                # PSP-провайдер і власник казино — взаємовиключні ролі,
+                # тому casino_classifier запускається тільки якщо psp не знайшов ліда
+                if not psp_classified:
+                    print("running casino_classifier")
+                    await run_casino_classifier(
+                        text=body.text,
+                        source_lead_id=result.get("db_id"),
+                        message_id=body.message_id,
+                        username=body.username,
+                        timestamp=body.timestamp,
+                        conn_pool=_state.pool,
+                    )
+
         except Exception as exc:  # noqa: BLE001
             logger.error("Background classify failed for message_id=%s: %s", body.message_id, exc)
 

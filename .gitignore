@@ -39,3 +39,7 @@ wheels/
 /.idea/vcs.xml
 /test_apply_payment_geo.py
 /Deduper/test_deduplication.py
+/tests/conftest.py
+/tests/test_keyword_filter.py
+/tests/test_positive.py
+/Platform classifier/

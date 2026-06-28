@@ -23,7 +23,7 @@ grouped by user_id, except the group is fetched from the DB instead of
 from an in-memory CSV. Only the ORIGINAL message (not the context ones)
 is ever written back to client_ready_leads.text.
 
-Entry point: run_second_pass(...), called from webhook._run() right after
+Entry point: run_psp_provider_classifier(...), called from webhook._run() right after
 the primary result has been persisted (so source_lead_id is available).
 """
 
@@ -57,7 +57,7 @@ def _api_key() -> str:
     if not key:
         raise RuntimeError(
             "PSP_PROVIDERS_OPENROUTER_API_KEY not set in .env — "
-            "second_pass cannot call OpenRouter without it."
+            "psp_provider_classifier cannot call OpenRouter without it."
         )
     return key
 
@@ -215,7 +215,7 @@ async def _call_openrouter(model: str, system: str, user: str, max_tokens: int) 
             return json.loads(raw_clean)
 
     except Exception as exc:  # noqa: BLE001 — network, HTTP, JSON — all fold to one error shape
-        logger.error("second_pass: OpenRouter call failed (model=%s): %s", model, exc)
+        logger.error("psp_provider_classifier: OpenRouter call failed (model=%s): %s", model, exc)
         return {"_error": str(exc)}
 
 
@@ -302,7 +302,7 @@ async def _persist_provider_lead(
 
     if dry_run:
         print("\n" + "=" * 70)
-        print("[second_pass DRY RUN] рядок, який мав би записатись у client_ready_leads:")
+        print("[psp_provider_classifier DRY RUN] рядок, який мав би записатись у client_ready_leads:")
         print("=" * 70)
         print(f"  source_lead_id            : {source_lead_id}")
         print(f"  username                  : {username}")
@@ -337,7 +337,7 @@ async def _persist_provider_lead(
             extracted.get("notes"),
         )
 
-    print(f"second_pass: persisted PSP provider lead id={row['id'] if row else None} username={username} company={extracted.get('company')!r}")
+    print(f"psp_provider_classifier: persisted PSP provider lead id={row['id'] if row else None} username={username} company={extracted.get('company')!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -359,33 +359,33 @@ async def run_psp_provider_classifier(
     """
     text = (text or "").strip()
     if not text:
-        print("[second_pass] step 0: ПОРОЖНІЙ text — вихід одразу")
+        print("[psp_provider_classifier] step 0: ПОРОЖНІЙ text — вихід одразу")
         return
-    print("[second_pass] step 0: старт, text =", text[:50])
+    print("[psp_provider_classifier] step 0: старт, text =", text[:50])
 
     # --- Step 1: keyword filter по оригінальному тексту ---------------------
     hits = _keyword_hits(text)
-    print("[second_pass] step 1: keyword hits =", hits)
+    print("[psp_provider_classifier] step 1: keyword hits =", hits)
     if hits == 0:
-        print("[second_pass] step 1: 0 збігів — вихід")
-        logger.debug("second_pass: no keyword hits, skipping message_id=%s", message_id)
+        print("[psp_provider_classifier] step 1: 0 збігів — вихід")
+        logger.debug("psp_provider_classifier: no keyword hits, skipping message_id=%s", message_id)
         return
 
     # --- Step 2: context (тільки якщо пройшов keyword-фільтр) ---------------
-    print("[second_pass] step 2: пробую acquire() з conn_pool...")
+    print("[psp_provider_classifier] step 2: пробую acquire() з conn_pool...")
     context_texts: list[str] = []
     try:
         async with conn_pool.acquire() as conn:
-            print("[second_pass] step 2: conn отримано, виконую SELECT...")
+            print("[psp_provider_classifier] step 2: conn отримано, виконую SELECT...")
             context_texts = await _load_author_context(username, conn)
     except Exception as exc:
-        print(f"[second_pass] step 2: ПОМИЛКА при читанні контексту: {exc!r}")
+        print(f"[psp_provider_classifier] step 2: ПОМИЛКА при читанні контексту: {exc!r}")
         raise
-    print("[second_pass] step 2: контекст завантажено, count =", len(context_texts))
+    print("[psp_provider_classifier] step 2: контекст завантажено, count =", len(context_texts))
     combined_text = _build_combined_text(text, context_texts)
 
     # --- Step 3: LLM verification --------------------------------------------
-    print("[second_pass] step 3: викликаю verify LLM, model =", _verify_model())
+    print("[psp_provider_classifier] step 3: викликаю verify LLM, model =", _verify_model())
     author_line = username or "anon"
     verify_user_msg = f"[Автор]: {author_line}\n[Повідомлення]: {combined_text}"
 
@@ -395,26 +395,26 @@ async def run_psp_provider_classifier(
         user=verify_user_msg,
         max_tokens=200,
     )
-    print("[second_pass] step 3: результат verify =", verify_result)
+    print("[psp_provider_classifier] step 3: результат verify =", verify_result)
 
     if verify_result.get("_error"):
-        print("[second_pass] step 3: помилка виклику — вихід")
+        print("[psp_provider_classifier] step 3: помилка виклику — вихід")
         logger.warning(
-            "second_pass: verification call failed for message_id=%s, skipping", message_id
+            "psp_provider_classifier: verification call failed for message_id=%s, skipping", message_id
         )
         return
 
     if verify_result.get("is_psp") is not True:
-        print("[second_pass] step 3: is_psp не True — вихід")
+        print("[psp_provider_classifier] step 3: is_psp не True — вихід")
         logger.debug(
-            "second_pass: not a PSP provider (message_id=%s): %s",
+            "psp_provider_classifier: not a PSP provider (message_id=%s): %s",
             message_id,
             verify_result.get("reason"),
         )
         return
 
     # --- Step 4: LLM field extraction ----------------------------------------
-    print("[second_pass] step 4: викликаю extract LLM, model =", _extract_model())
+    print("[psp_provider_classifier] step 4: викликаю extract LLM, model =", _extract_model())
     extract_user_msg = f"[Автор]: {author_line}\n\n[Повідомлення]:\n{combined_text}"
 
     extract_result = await _call_openrouter(
@@ -423,26 +423,26 @@ async def run_psp_provider_classifier(
         user=extract_user_msg,
         max_tokens=400,
     )
-    print("[second_pass] step 4: результат extract =", extract_result)
+    print("[psp_provider_classifier] step 4: результат extract =", extract_result)
 
     if extract_result.get("_error"):
-        print("[second_pass] step 4: помилка виклику — вихід")
+        print("[psp_provider_classifier] step 4: помилка виклику — вихід")
         logger.warning(
-            "second_pass: extraction call failed for message_id=%s, skipping", message_id
+            "psp_provider_classifier: extraction call failed for message_id=%s, skipping", message_id
         )
         return
 
     if extract_result.get("judged_as") != "provider":
-        print("[second_pass] step 4: judged_as != provider — вихід")
+        print("[psp_provider_classifier] step 4: judged_as != provider — вихід")
         logger.debug(
-            "second_pass: extraction stage downgraded verdict (message_id=%s): %s",
+            "psp_provider_classifier: extraction stage downgraded verdict (message_id=%s): %s",
             message_id,
             extract_result.get("judged_as"),
         )
         return
 
     # --- Step 5: persist -------------------------------------------------------
-    print("[second_pass] step 5: записую результат...")
+    print("[psp_provider_classifier] step 5: записую результат...")
     await _persist_provider_lead(
         source_lead_id=source_lead_id,
         username=username,
@@ -452,4 +452,5 @@ async def run_psp_provider_classifier(
         conn_pool=conn_pool,
         dry_run=dry_run,
     )
-    print("[second_pass] step 5: готово")
+    print("[psp_provider_classifier] step 5: готово")
+    return True
