@@ -345,9 +345,8 @@ async def classify(body: ClassifyRequest) -> dict:
     async def _run():
         try:
             async with _state.pool.acquire() as conn:
-                is_dup, original_id = await is_duplicate(body.username, body.text, body.timestamp, conn)
-                if is_dup:
-                    print(f"[dedup] пропускаємо дублікат: username={body.username!r} original_id={original_id}")
+                if await is_duplicate(body.username, body.text, body.timestamp, conn):
+                    print(f"[dedup] пропускаємо дублікат: username={body.username!r} message_id={body.message_id}")
                     await conn.execute(
                         _UPSERT_SQL,
                         body.group_id,  # $1  group_id
@@ -364,8 +363,7 @@ async def classify(body: ClassifyRequest) -> dict:
                         json.dumps([]),  # $12 geo
                         json.dumps([]),  # $13 payment_methods_mentioned
                         None,  # $14 evidence_quote
-                        f"[deduplicated: copy of username={body.username!r} original_id={original_id}]",
-                        # $15 rationale
+                        f"[duplicate of text='{body.text.strip()[:50]}' of user={body.username}]", # $15 rationale
                         json.dumps([]),  # $16 glossary_terms_seen
                         None,  # $17 elapsed_ms
                         None,  # $18 verdict
