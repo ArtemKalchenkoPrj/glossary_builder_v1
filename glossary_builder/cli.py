@@ -149,6 +149,12 @@ def export_json(db_path, out_path, min_confidence, include_irrelevant, primary_s
 
 
 @cli.command(name="extract-leads")
+@click.option("--fusion", is_flag=True, default=False,
+              help="Use fusion panel instead of single model.")
+@click.option("--fusion-panel", default="google/gemma-3-12b-it,deepseek/deepseek-v4-flash",
+              help="Comma-separated panel models for fusion.")
+@click.option("--fusion-judge", default="google/gemini-2.5-flash-lite",
+              help="Judge model for fusion.")
 @click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True),
               help="Path to the corpus: .xlsx or .csv with the same column layout.")
 @click.option("--sheet", default=None, help="For .xlsx: sheet name (defaults to first).")
@@ -171,14 +177,28 @@ def export_json(db_path, out_path, min_confidence, include_irrelevant, primary_s
               help="Lead-definition prompt version. v3=high precision, "
                    "v5=balanced (default), v6=strictest, v5-multilang=v5 with english and ukrainian support.")
 def extract_leads(input_path, sheet, glossary_path, output_path, sample,
-                  concurrency, chunk_size, no_resume, gt_path, prompt_version):
+                  concurrency, chunk_size, no_resume, gt_path, prompt_version, fusion, fusion_panel, fusion_judge):
     """Classify each message as lead / not-lead with structured evidence."""
+
     console.rule("[bold]Loading corpus + glossary")
     if input_path.endswith(".csv"):
         messages = _load_csv(input_path)
     else:
         messages = load_messages(input_path, sheet=sheet)
     console.print(f"Loaded {len(messages)} messages.")
+
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        filename="fusion_debug.log",
+        filemode="w",
+    )
+    # Вимикаємо httpx шум
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # Наші логи на DEBUG
+    logging.getLogger("glossary_builder.fusion").setLevel(logging.DEBUG)
 
     # Exact-duplicate dedup BEFORE any LLM calls. Identical reposts/forwards
     # are common in these chats and would otherwise burn tokens (and inflate
@@ -220,7 +240,18 @@ def extract_leads(input_path, sheet, glossary_path, output_path, sample,
     cfg = LeadExtractionConfig()
     cfg.lead_definition = LEAD_PROMPTS_BY_VERSION[prompt_version]
     console.print(f"Lead-definition prompt version: [cyan]{prompt_version}")
-    extractor = LeadExtractor(glossary, llm, cfg)
+    fusion_config = None
+    if fusion:
+        from .fusion import FusionConfig
+        cfg.validate_evidence_quote = False
+        fusion_config = FusionConfig(
+            panel_models=fusion_panel.split(","),
+            judge_model=fusion_judge,
+            api_key=os.environ["OPENAI_API_KEY"],
+        )
+        console.print(f"[cyan]Fusion enabled: panel={fusion_panel}, judge={fusion_judge}")
+
+    extractor = LeadExtractor(glossary, llm, cfg, fusion_config=fusion_config)
 
     # The JSONL stream lives next to the final JSON output so a crash
     # mid-run can be resumed with the same command.
@@ -633,6 +664,7 @@ def judge_leads(input_path, output_path, concurrency, chunk_size, resume_jsonl):
     console.print(f"Implied precision: {100*real/max(real+mistake,1):.1f}%")
     usage = llm.usage.to_dict()
     console.print(f"Judge LLM cost (this run): ~${usage['estimated_cost_usd']:.3f}")
+
 
 
 if __name__ == "__main__":

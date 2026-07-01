@@ -245,7 +245,7 @@ class LLMClient:
             temperature=self.config.temperature,
             json_mode=True,
         )
-        data = _extract_json(resp.text)
+        data = extract_json(resp.text)
         if data is None:
             raise LLMError(f"Could not parse JSON from response:\n{resp.text[:500]}")
         return data, resp
@@ -340,7 +340,9 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
 _THINKING_PREFIX_RE = re.compile(r'^[\s">]+')
 
 
-def _extract_json(text: str) -> Any | None:
+from json_repair import repair_json
+
+def extract_json(text: str) -> Any | None:
     text = text.strip()
 
     # Strip thinking-mode artifacts like `">` that Qwen3 prepends to output.
@@ -375,5 +377,13 @@ def _extract_json(text: str) -> Any | None:
                         return json.loads(text[start : i + 1])
                     except json.JSONDecodeError:
                         break
+
+    # Last resort — json_repair
+    try:
+        repaired = repair_json(text, return_objects=True)
+        if repaired:
+            return repaired
+    except Exception:
+        pass
 
     return None

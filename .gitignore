@@ -44,3 +44,6 @@ wheels/
 /tests/test_positive.py
 /Platform classifier/
 /tests/test_casino_classifier.py
+/tests/
+/data/
+/.DS_Store/

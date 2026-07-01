@@ -33,6 +33,7 @@ from typing import Iterable
 
 from tqdm import tqdm
 
+from .fusion import FusionConfig, FusionExtractor
 from .llm import LLMClient
 from .loader import Message
 
@@ -70,6 +71,8 @@ class LeadDecision:
 @dataclass
 class LeadExtractionConfig:
     """How leads are defined and how the extractor behaves."""
+    validate_evidence_quote: bool = False
+    """Включить/выключить валидатор - есть риск галюцинаций"""
 
     context_messages_before: int = 5
     """Number of preceding messages from the same group to include as context."""
@@ -433,10 +436,12 @@ class LeadExtractor:
         glossary: list[dict],
         llm: LLMClient,
         config: LeadExtractionConfig | None = None,
+        fusion_config: FusionConfig | None = None,
     ):
         self.glossary_index = GlossaryIndex(glossary)
         self.llm = llm
         self.config = config or LeadExtractionConfig()
+        self.fusion = FusionExtractor(fusion_config) if fusion_config else None
 
         # Pre-filter wiring. Resolved once: import the function and warm the
         # term dictionary so a missing/empty DB fails loudly here rather than
@@ -466,6 +471,7 @@ class LeadExtractor:
         context: list[Message],
     ) -> LeadDecision | None:
         """Classify one message. Returns None if the message was skipped."""
+
         cfg = self.config
         text = (target.text or "").strip()
         if not text or len(text) < cfg.skip_min_text_length:
@@ -554,9 +560,15 @@ class LeadExtractor:
 
         _t0 = time.perf_counter()
         try:
-            self.llm.set_stage("lead_full_prompt")
-            data, resp = self.llm.complete_json(system, user, max_tokens=500)
-        except Exception as exc:  # noqa: BLE001 — one bad call shouldn't kill batch
+            if self.fusion is not None:
+                data, raw = self.fusion.run(system, user)
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+            else:
+                self.llm.set_stage("lead_full_prompt")
+                resp_data, resp = self.llm.complete_json(system, user, max_tokens=500)
+                data, raw = resp_data, resp.text
+        except Exception as exc:
             return LeadDecision(
                 message_id=target.message_id,
                 timestamp=target.date.isoformat() if target.date else None,
@@ -577,7 +589,7 @@ class LeadExtractor:
                 raw_llm_response=None,
             )
 
-        decision = _build_decision(target, text, data, glossary_hits, resp.text)
+        decision = _build_decision(target, text, data, glossary_hits, raw, cfg=self.config)
         decision.elapsed_ms = (time.perf_counter() - _t0) * 1000.0
         return decision
 
@@ -705,7 +717,15 @@ class LeadExtractor:
         return decisions
 
 
-def _build_decision(target: Message, text: str, data: dict, glossary_hits: list[dict], raw: str) -> LeadDecision:
+def _build_decision(
+        target: Message,
+        text: str,
+        data: dict,
+        glossary_hits: list[dict],
+        raw: str,
+        cfg: LeadExtractionConfig | None = None,
+    ) -> LeadDecision:
+
     def _list_str(v) -> list[str]:
         if isinstance(v, list):
             return [str(x).strip() for x in v if str(x).strip()]
@@ -737,7 +757,7 @@ def _build_decision(target: Message, text: str, data: dict, glossary_hits: list[
     # punctuation) but require a meaningful chunk of the quote to be in
     # the message body itself.
     if is_lead and evidence_quote:
-        if not _quote_supported_by_text(evidence_quote, text):
+        if cfg.validate_evidence_quote and not _quote_supported_by_text(evidence_quote, text):
             is_lead = False
             rationale = (
                 "[downgraded by evidence-quote validator: quoted evidence "
