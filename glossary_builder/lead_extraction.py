@@ -439,16 +439,21 @@ class LeadExtractor:
         self,
         glossary: list[dict],
         llm: LLMClient,
-        config: LeadExtractionConfig | None = None,
-        fusion_config: FusionConfig | None = None,
-        rag_config: RagConfig | None = None,
+        config=None,
+        fusion_config=None,
+        rag_config=None,
+        rag_index=None
     ):
-        self.rag_index = RagIndex(rag_config) if rag_config else None
         self.glossary_index = GlossaryIndex(glossary)
         self.llm = llm
         self.config = config or LeadExtractionConfig()
         self.fusion = FusionExtractor(fusion_config) if fusion_config else None
-        self.rag_index = RagIndex(rag_config) if rag_config else None
+        if rag_index is not None:
+            self.rag_index = rag_index
+        elif rag_config is not None:
+            self.rag_index = RagIndex(rag_config)
+        else:
+            self.rag_index = None
 
         # Pre-filter wiring. Resolved once: import the function and warm the
         # term dictionary so a missing/empty DB fails loudly here rather than

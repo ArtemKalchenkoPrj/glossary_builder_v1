@@ -37,7 +37,7 @@ wheels/
 /glossary_builder/requirements.txt
 /uv.lock
 /.idea/vcs.xml
-/test_apply_payment_geo.py
+/tests/test_apply_payment_geo.py
 /tests/test_deduplication.py
 /tests/conftest.py
 /tests/test_keyword_filter.py
