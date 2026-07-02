@@ -35,7 +35,11 @@ from .lead_extraction import LeadExtractor, LeadExtractionConfig, LeadDecision
 from .llm import LLMClient
 from .loader import Message
 from .cli import _JUDGE_SYSTEM, _JUDGE_USER_TEMPLATE
+from .rag import RagIndex
 
+import logging
+
+logger = logging.getLogger("__name__")
 
 # ---------------------------------------------------------------------------
 # Judge prompt constants
@@ -128,7 +132,7 @@ from .cli import _JUDGE_SYSTEM, _JUDGE_USER_TEMPLATE
 # ---------------------------------------------------------------------------
 
 
-def _run_judge(decision: LeadDecision, llm: LLMClient) -> tuple[str, str]:
+def _run_judge(decision: LeadDecision, llm: LLMClient, judge_system:str) -> tuple[str, str]:
     """Call the judge LLM for a single lead decision.
 
     Returns a (verdict, judge_reason) tuple.  verdict is one of
@@ -152,7 +156,7 @@ def _run_judge(decision: LeadDecision, llm: LLMClient) -> tuple[str, str]:
 
     try:
         llm.set_stage("lead_judge")
-        data, _ = llm.complete_json(_JUDGE_SYSTEM, user_prompt, max_tokens=200)
+        data, _ = llm.complete_json(judge_system, user_prompt, max_tokens=200)
         verdict = str(data.get("verdict", "")).strip().upper()
         reason = str(data.get("reason", "")).strip()
         if verdict not in ("REAL_LEAD", "MISTAKE"):
@@ -191,6 +195,8 @@ def classify_single_message(
     username: Optional[str] = None,
     timestamp: Optional[datetime] = None,
     context: Optional[list[Message]] = None,
+    rag_index : Optional[RagIndex] = None,
+    judge_system : Optional[str] = None
 ) -> dict:
     """Classify one message through the full extract → judge pipeline.
 
@@ -242,7 +248,14 @@ def classify_single_message(
         last_name=None,
     )
 
-    extractor = LeadExtractor(glossary, llm, cfg)
+    extractor = LeadExtractor(glossary, llm, cfg, rag_index=rag_index)
+
+    logger.info(
+        "[classify] config prompt_version=%s judge_system_len=%d rag=%s",
+        cfg.lead_definition[:30].replace("\n", " "),  # перші 30 символів промпту
+        len(judge_system or ""),
+        "enabled" if rag_index is not None else "disabled",
+    )
 
     # extract_one() returns None only when the message is too short or the
     # author is in the excluded-authors list.  For a single-message adapter
@@ -286,6 +299,6 @@ def classify_single_message(
     if judge_model:
         llm.model = judge_model
 
-    verdict, judge_reason = _run_judge(decision, llm)
+    verdict, judge_reason = _run_judge(decision, llm, judge_system)
 
     return _merge(decision, verdict=verdict, judge_reason=judge_reason)

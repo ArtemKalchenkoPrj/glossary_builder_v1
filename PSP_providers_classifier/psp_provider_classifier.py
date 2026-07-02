@@ -34,11 +34,14 @@ import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import asyncpg
 import httpx
+from dotenv import load_dotenv
 
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +54,7 @@ _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _MAX_CONTEXT_MESSAGES = 10
 _MAX_CONTEXT_CHARS = 3000
 
+_TABLE_PREFIX = os.getenv("TABLE_PREFIX") or ""
 
 def _api_key() -> str:
     key = os.environ.get("PSP_PROVIDERS_OPENROUTER_API_KEY")
@@ -236,8 +240,8 @@ async def _load_author_context(
         return []
 
     rows = await conn.fetch(
-        """
-        SELECT text FROM client_ready_leads
+        f"""
+        SELECT text FROM {_TABLE_PREFIX}client_ready_leads
         WHERE username = $1 AND text IS NOT NULL
         ORDER BY created_at DESC
         LIMIT $2
@@ -264,7 +268,7 @@ def _build_combined_text(current_text: str, context_texts: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 _INSERT_CLIENT_READY_SQL = """
-INSERT INTO client_ready_leads (
+INSERT INTO {_TABLE_PREFIX}client_ready_leads (
     source_lead_id, username, text, msg_timestamp,
     lead_type, vertical, geo, payment_methods_mentioned, approved_by,
     company, position, notes

@@ -25,18 +25,21 @@ import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import asyncpg
 import httpx
 from json_repair import repair_json
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
-
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+_TABLE_PREFIX = os.getenv("TABLE_PREFIX") or ""
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -224,8 +227,8 @@ async def _call_openrouter(model: str, system: str, user: str, max_tokens: int) 
 # DB write
 # ---------------------------------------------------------------------------
 
-_INSERT_SQL = """
-INSERT INTO client_ready_leads (
+_INSERT_SQL = f"""
+INSERT INTO {_TABLE_PREFIX}client_ready_leads (
     source_lead_id, username, text, msg_timestamp,
     lead_type, vertical, geo, platform, approved_by, notes
 ) VALUES (

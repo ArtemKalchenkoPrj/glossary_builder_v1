@@ -23,29 +23,33 @@ is_duplicate(username, text, timestamp, conn) -> bool
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
+from dotenv import load_dotenv
 
 import asyncpg
 
-
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 _WINDOW = timedelta(hours=24)
+_TABLE_PREFIX = os.getenv('TABLE_PREFIX') or ""
 
-_UPSERT_SQL = """
-INSERT INTO dedup_log (username, text_hash, created_at)
+_UPSERT_SQL = f"""
+INSERT INTO {_TABLE_PREFIX}dedup_log (username, text_hash, created_at)
 VALUES ($1, $2, $3)
 ON CONFLICT (username) DO UPDATE
     SET text_hash  = EXCLUDED.text_hash,
         created_at = EXCLUDED.created_at
     WHERE
-        dedup_log.text_hash != EXCLUDED.text_hash
-        OR dedup_log.created_at < EXCLUDED.created_at - INTERVAL '24 hours'
+        {_TABLE_PREFIX}dedup_log.text_hash != EXCLUDED.text_hash
+        OR {_TABLE_PREFIX}dedup_log.created_at < EXCLUDED.created_at - INTERVAL '24 hours'
 RETURNING text_hash, created_at
 """
 
-_SELECT_SQL = """
+_SELECT_SQL = f"""
 SELECT text_hash, created_at
-FROM dedup_log
+FROM {_TABLE_PREFIX}dedup_log
 WHERE username = $1
 """
 

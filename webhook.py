@@ -32,76 +32,24 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from Casino_platforms_classifier.casino_classifier import run_casino_classifier
+from glossary_builder.cli import JUDGE_PROMPTS_BY_VERSION
 from glossary_builder.lead_extraction import LeadExtractionConfig, load_glossary
 from glossary_builder.lead_prompt_versions import BY_VERSION
 from glossary_builder.llm import LLMClient
 from glossary_builder.loader import Message
+from glossary_builder.rag import RagIndex, RagConfig
 from glossary_builder.single_classifier import classify_single_message
 from glossary_builder.geo_pipeline import process_geo
 from PSP_providers_classifier.psp_provider_classifier import run_psp_provider_classifier
 from Deduper.deduplication import is_duplicate
 
-load_dotenv()
+_TABLE_PREFIX = os.getenv('TABLE_PREFIX') or ""
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# DDL — runs once on startup if the table does not exist yet.
-#
-# Primary key: serial id.
-# Unique constraint: (group_id, message_id) — ON CONFLICT DO UPDATE.
-# db_write_status / db_write_error: variant A marker for failed DB writes
-#   (the classification result is always returned to the caller; only the
-#   persistence status is reflected here).
-# ---------------------------------------------------------------------------
-
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS classified_messages_dirty (
-    -- Surrogate primary key.
-    id                       BIGSERIAL PRIMARY KEY,
-
-    -- Source identifiers. The pair (group_id, message_id) is unique;
-    -- a re-classification of the same message will UPDATE the existing row.
-    group_id                 BIGINT,
-    message_id               BIGINT,
-
-    -- Core message fields.
-    timestamp                TIMESTAMPTZ,
-    username                 TEXT,
-    text                     TEXT,
-
-    -- Extract-stage output.
-    is_lead                  BOOLEAN,
-    confidence               DOUBLE PRECISION,
-    lead_type                TEXT,
-    intent                   TEXT,
-    interest_level           TEXT,
-    vertical                 JSONB,
-    geo                      JSONB,
-    payment_methods_mentioned JSONB,
-    evidence_quote           TEXT,
-    rationale                TEXT,
-    glossary_terms_seen      JSONB,
-    elapsed_ms               DOUBLE PRECISION,
-
-    -- Judge-stage output (NULL when is_lead=FALSE).
-    verdict                  TEXT,
-    judge_reason             TEXT,
-
-    -- DB write metadata (variant A: status recorded in the row itself).
-    db_write_status          TEXT    NOT NULL DEFAULT 'ok',
-    db_write_error           TEXT,
-
-    -- Housekeeping.
-    classified_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_group_message UNIQUE (group_id, message_id)
-);
-"""
 
 # Upsert: on (group_id, message_id) conflict — overwrite all classification
 # fields with the fresh result so re-classification is idempotent.
-_UPSERT_SQL = """
-INSERT INTO classified_messages_dirty (
+_UPSERT_SQL = f"""
+INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     group_id, message_id, timestamp, username, text,
     is_lead, confidence, lead_type, intent, interest_level,
     vertical, geo, payment_methods_mentioned,
@@ -118,7 +66,7 @@ INSERT INTO classified_messages_dirty (
     $20, $21,
     NOW()
 )
-ON CONFLICT ON CONSTRAINT uq_group_message DO UPDATE SET
+ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message DO UPDATE SET
     timestamp                 = EXCLUDED.timestamp,
     username                  = EXCLUDED.username,
     text                      = EXCLUDED.text,
@@ -152,7 +100,8 @@ class _AppState:
     llm: LLMClient
     cfg: LeadExtractionConfig
     pool: asyncpg.Pool
-
+    rag_index: RagIndex
+    judge_system: str
 
 _state = _AppState()
 
@@ -166,18 +115,26 @@ async def lifespan(app: FastAPI):
     _state.glossary = load_glossary(
         project_root / "data/output/glossary_primary_sense_only.json"
     )
+    rag_cfg = RagConfig(
+        db_path=str(project_root / "data/rag/chroma"),
+        api_key=os.environ["OPENAI_API_KEY"],
+    )
+    _state.rag_index = RagIndex(rag_cfg)
+    if _state.rag_index.count() == 0:
+        raise RuntimeError("RAG index is empty — run build-rag first")
+    logger.info("[startup] rag=enabled examples=%d", _state.rag_index.count())
+
     _state.llm = LLMClient()
     _state.cfg = LeadExtractionConfig()
-    _state.cfg.lead_definition = BY_VERSION["v5-short"]
+    _state.cfg.lead_definition = BY_VERSION["v5-01-short"]
+    logger.info("[startup] prompt_version=v5-01-short")
     _state.cfg.pre_filter_db_path = str(project_root / "data/output/glossary.db")
+    _state.judge_system = JUDGE_PROMPTS_BY_VERSION["v2"]
+    logger.info("[startup] judge_version=v2")
 
     # PostgreSQL connection pool.
     dsn = os.environ["POSTGRES_DSN"]  # fail fast if not set
     _state.pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
-
-    # Ensure the table exists (idempotent).
-    async with _state.pool.acquire() as conn:
-        await conn.execute(_CREATE_TABLE_SQL)
 
     logger.info("Startup complete — glossary: %d entries", len(_state.glossary))
 
@@ -232,14 +189,6 @@ class ClassifyRequest(BaseModel):
         description=(
             "Optional surrounding messages (e.g. a few before/after). "
             "When omitted the classifier runs with no surrounding context."
-        ),
-    )
-    prompt_version: Optional[str] = Field(
-        None,
-        description=(
-            "Lead-definition prompt version to use for this request. "
-            f"Available: {list(BY_VERSION.keys())}. "
-            "When omitted the server default (v5-short) is used."
         ),
     )
 
@@ -323,20 +272,7 @@ def _parse_dt(value) -> Optional[datetime]:
 
 @app.post("/classify")
 async def classify(body: ClassifyRequest) -> dict:
-    if body.prompt_version is not None:
-        if body.prompt_version not in BY_VERSION:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unknown prompt_version {body.prompt_version!r}. "
-                    f"Available: {list(BY_VERSION.keys())}"
-                ),
-            )
-        cfg = LeadExtractionConfig()
-        cfg.lead_definition = BY_VERSION[body.prompt_version]
-        cfg.pre_filter_db_path = _state.cfg.pre_filter_db_path
-    else:
-        cfg = _state.cfg
+    cfg = _state.cfg
 
     context: list[Message] | None = None
     if body.context is not None:
@@ -344,35 +280,36 @@ async def classify(body: ClassifyRequest) -> dict:
 
     async def _run():
         try:
+            logger.info(
+                "[classify] start message_id=%s username=%r text_len=%d",
+                body.message_id, body.username, len(body.text or "")
+            )
+
             async with _state.pool.acquire() as conn:
                 if await is_duplicate(body.username, body.text, body.timestamp, conn):
-                    print(f"[dedup] пропускаємо дублікат: username={body.username!r} message_id={body.message_id}")
+                    logger.info(
+                        "[classify] duplicate skipped message_id=%s username=%r",
+                        body.message_id, body.username
+                    )
                     await conn.execute(
                         _UPSERT_SQL,
-                        body.group_id,  # $1  group_id
-                        body.message_id,  # $2  message_id
-                        body.timestamp,  # $3  timestamp
-                        body.username,  # $4  username
-                        body.text,  # $5  text
-                        False,  # $6  is_lead — дублікат, не лід
-                        None,  # $7  confidence
-                        None,  # $8  lead_type
-                        None,  # $9  intent
-                        None,  # $10 interest_level
-                        json.dumps([]),  # $11 vertical
-                        json.dumps([]),  # $12 geo
-                        json.dumps([]),  # $13 payment_methods_mentioned
-                        None,  # $14 evidence_quote
-                        f"[duplicate of text='{body.text.strip()[:50]}' of user={body.username}]", # $15 rationale
-                        json.dumps([]),  # $16 glossary_terms_seen
-                        None,  # $17 elapsed_ms
-                        None,  # $18 verdict
-                        None,  # $19 judge_reason
-                        "ok",  # $20 db_write_status
-                        None,  # $21 db_write_error
+                        body.group_id,
+                        body.message_id,
+                        body.timestamp,
+                        body.username,
+                        body.text,
+                        False,
+                        None, None, None, None,
+                        json.dumps([]), json.dumps([]), json.dumps([]),
+                        None,
+                        f"[duplicate of text='{body.text.strip()[:50]}' of user={body.username}]",
+                        json.dumps([]),
+                        None, None, None,
+                        "ok", None,
                     )
                     return
 
+            logger.info("[classify] running extractor message_id=%s", body.message_id)
             result = await asyncio.to_thread(
                 classify_single_message,
                 text=body.text,
@@ -383,19 +320,38 @@ async def classify(body: ClassifyRequest) -> dict:
                 username=body.username,
                 timestamp=body.timestamp,
                 context=context,
+                rag_index=_state.rag_index,
+                judge_system=_state.judge_system,
             )
-            result = await _persist(body.group_id, result)
 
             is_lead = result.get("is_lead")
             verdict = result.get("verdict")
+            confidence = result.get("confidence")
+
+            logger.info(
+                "[classify] extractor done message_id=%s is_lead=%s verdict=%s confidence=%s",
+                body.message_id, is_lead, verdict, confidence
+            )
+
+            if is_lead:
+                logger.info(
+                    "[classify] LEAD found message_id=%s vertical=%s geo=%s methods=%s",
+                    body.message_id,
+                    result.get("vertical"),
+                    result.get("geo"),
+                    result.get("payment_methods_mentioned"),
+                )
+
+            result = await _persist(body.group_id, result)
             db_ok = result.get("db_write_status") == "ok"
 
-            # Запускаємо secondary classifiers тільки якщо основний pipeline
-            # не знайшов ліда і запис у БД пройшов успішно
-            if (not is_lead or verdict == "MISTAKE") and db_ok:
+            logger.info(
+                "[classify] persisted message_id=%s db_ok=%s db_id=%s",
+                body.message_id, db_ok, result.get("db_id")
+            )
 
-                # Спочатку перевіряємо чи це PSP-провайдер
-                print("running psp_provider_classifier")
+            if (not is_lead or verdict == "MISTAKE") and db_ok:
+                logger.info("[classify] running psp_provider_classifier message_id=%s", body.message_id)
                 psp_classified = await run_psp_provider_classifier(
                     text=body.text,
                     source_lead_id=result.get("db_id"),
@@ -404,11 +360,13 @@ async def classify(body: ClassifyRequest) -> dict:
                     timestamp=body.timestamp,
                     conn_pool=_state.pool,
                 )
+                logger.info(
+                    "[classify] psp_classifier done message_id=%s psp_classified=%s",
+                    body.message_id, psp_classified
+                )
 
-                # PSP-провайдер і власник казино — взаємовиключні ролі,
-                # тому casino_classifier запускається тільки якщо psp не знайшов ліда
                 if not psp_classified:
-                    print("running casino_classifier")
+                    logger.info("[classify] running casino_classifier message_id=%s", body.message_id)
                     await run_casino_classifier(
                         text=body.text,
                         source_lead_id=result.get("db_id"),
@@ -417,9 +375,15 @@ async def classify(body: ClassifyRequest) -> dict:
                         timestamp=body.timestamp,
                         conn_pool=_state.pool,
                     )
+                    logger.info("[classify] casino_classifier done message_id=%s", body.message_id)
 
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Background classify failed for message_id=%s: %s", body.message_id, exc)
+            logger.info("[classify] done message_id=%s", body.message_id)
+
+        except Exception as exc:
+            logger.error(
+                "[classify] FAILED message_id=%s error=%s",
+                body.message_id, exc, exc_info=True
+            )
 
     asyncio.create_task(_run())
     return {"status": "accepted", "message_id": body.message_id}
