@@ -36,7 +36,10 @@ from tqdm import tqdm
 from .fusion import FusionConfig, FusionExtractor
 from .llm import LLMClient
 from .loader import Message
+from .rag import RagConfig, RagIndex, format_few_shot
 
+import logging
+logger = logging.getLogger(__name__)
 
 @dataclass
 class LeadDecision:
@@ -354,6 +357,7 @@ _USER_TEMPLATE = """\
 GLOSSARY (terms relevant to the target message):
 {glossary_block}
 
+{few_shot_block}\
 CONTEXT (preceding and following messages from the same group):
 {context_block}
 
@@ -437,11 +441,14 @@ class LeadExtractor:
         llm: LLMClient,
         config: LeadExtractionConfig | None = None,
         fusion_config: FusionConfig | None = None,
+        rag_config: RagConfig | None = None,
     ):
+        self.rag_index = RagIndex(rag_config) if rag_config else None
         self.glossary_index = GlossaryIndex(glossary)
         self.llm = llm
         self.config = config or LeadExtractionConfig()
         self.fusion = FusionExtractor(fusion_config) if fusion_config else None
+        self.rag_index = RagIndex(rag_config) if rag_config else None
 
         # Pre-filter wiring. Resolved once: import the function and warm the
         # term dictionary so a missing/empty DB fails loudly here rather than
@@ -549,8 +556,27 @@ class LeadExtractor:
         system = _SYSTEM_TEMPLATE.replace(
             "{lead_definition}", cfg.lead_definition
         )
+        # RAG few-shot injection
+        few_shot_block = ""
+        if self.rag_index is not None:
+            try:
+                examples = self.rag_index.query(text)
+                few_shot_block = format_few_shot(examples)
+
+                # Логи
+                snippet = text.replace("\n", " ").strip()[:100]
+                logger.info(f"[rag] target: {snippet}")
+                for i, ex in enumerate(examples["leads"], 1):
+                    logger.info(f"[rag] lead_{i}: {ex.replace(chr(10), ' ').strip()[:100]}")
+                for i, ex in enumerate(examples["not_leads"], 1):
+                    logger.info(f"[rag] not_lead_{i}: {ex.replace(chr(10), ' ').strip()[:100]}")
+
+            except Exception as e:
+                logger.warning(f"[rag] query failed: {e}")
+
         user = _USER_TEMPLATE.format(
             glossary_block=_format_glossary_block(glossary_hits),
+            few_shot_block=few_shot_block,
             context_block=_format_context(context),
             message_id=target.message_id,
             username=target.username or "anon",

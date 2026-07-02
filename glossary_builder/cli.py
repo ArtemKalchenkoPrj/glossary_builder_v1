@@ -176,8 +176,18 @@ def export_json(db_path, out_path, min_confidence, include_irrelevant, primary_s
 @click.option("--prompt-version", type=click.Choice(list(BY_VERSION.keys())), default="v5",
               help="Lead-definition prompt version. v3=high precision, "
                    "v5=balanced (default), v6=strictest, v5-multilang=v5 with english and ukrainian support.")
+@click.option("--rag", is_flag=True, default=False,
+              help="Enable RAG few-shot injection.")
+@click.option("--rag-db", default="data/rag/chroma",
+              help="Path to Chroma persistent storage.")
+@click.option("--rag-model", default="perplexity/pplx-embed-v1-0.6b",
+              help="Embedding model via OpenRouter.")
+@click.option("--rag-k", type=int, default=2,
+              help="Number of examples per class (LEAD + NOT LEAD).")
 def extract_leads(input_path, sheet, glossary_path, output_path, sample,
-                  concurrency, chunk_size, no_resume, gt_path, prompt_version, fusion, fusion_panel, fusion_judge):
+                  concurrency, chunk_size, no_resume, gt_path, prompt_version,
+                  fusion, fusion_panel, fusion_judge,
+                  rag, rag_db, rag_model, rag_k):
     """Classify each message as lead / not-lead with structured evidence."""
 
     console.rule("[bold]Loading corpus + glossary")
@@ -193,6 +203,7 @@ def extract_leads(input_path, sheet, glossary_path, output_path, sample,
         format="%(asctime)s | %(levelname)s | %(message)s",
         filename="fusion_debug.log",
         filemode="w",
+        encoding="utf-8",
     )
     # Вимикаємо httpx шум
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -251,7 +262,23 @@ def extract_leads(input_path, sheet, glossary_path, output_path, sample,
         )
         console.print(f"[cyan]Fusion enabled: panel={fusion_panel}, judge={fusion_judge}")
 
-    extractor = LeadExtractor(glossary, llm, cfg, fusion_config=fusion_config)
+    rag_config = None
+    if rag:
+        from .rag import RagConfig, RagIndex
+        rag_config = RagConfig(
+            db_path=rag_db,
+            embedding_model=rag_model,
+            api_key=os.environ["OPENAI_API_KEY"],
+            k=rag_k,
+        )
+        rag_index = RagIndex(rag_config)
+        if rag_index.count() == 0:
+            console.print("[yellow]RAG index is empty — run build-rag first. RAG disabled.")
+            rag_config = None
+        else:
+            console.print(f"[cyan]RAG enabled: {rag_index.count()} examples, k={rag_k}, model={rag_model}")
+
+    extractor = LeadExtractor(glossary, llm, cfg, fusion_config=fusion_config, rag_config=rag_config)
 
     # The JSONL stream lives next to the final JSON output so a crash
     # mid-run can be resumed with the same command.
@@ -518,8 +545,100 @@ Return JSON:
 }}
 """
 
+_JUDGE_SYSTEM_V2 = """\
+You are an independent reviewer of automatically-extracted sales leads from
+a Telegram chat about high-risk payment processing (iGaming, casinos,
+sportsbooks, forex, crypto, adult). Messages are in Russian, Ukrainian,
+English, or mixed.
+
+For each lead I show you, give an INDEPENDENT verdict: is this a REAL_LEAD
+or a MISTAKE? Apply this lead definition strictly:
+
+LEAD = a message from a BUYER (iGaming operator, affiliate, merchant,
+platform) ACTIVELY SHOPPING for a payment SERVICE (PSP, acquirer, gateway,
+orchestrator, payment method integration) AND signals a concrete need:
+specific vertical, geo, payment method, volume, or provider being evaluated.
+
+═══════════════════════════════════════════════════════
+ALWAYS MISTAKE — these patterns are NEVER leads:
+═══════════════════════════════════════════════════════
+
+AFFILIATE / MEDIA BUYING INFRASTRUCTURE (never REAL_LEAD):
+  - '#buying' / '#WTB' + geo list + 'MB only' / 'direct MB' / 'only MB' —
+    media buyers sourcing merchant banks for traffic funnels, NOT casino
+    operators seeking PSP.
+  - 'лейка' / 'приемка' + geo WITHOUT explicit casino/platform context —
+    traffic infrastructure for media buying, NOT payment-service procurement.
+  - 'фанел' / 'funnel' + MB — media buying funnel infrastructure.
+  - 'филлер' — payment fill partner for media buying, NOT PSP procurement.
+  - 'CPA test' / 'CRG' / 'cap for testing' / 'refs' — affiliate marketing
+    terms indicating traffic sourcing, NOT payment procurement.
+  - 'looking for MB' / 'only MB' / 'direct MB' WITHOUT explicit vertical
+    (casino/igaming/sportsbook) — merchant bank sourcing for affiliates,
+    NOT a PSP lead.
+    
+P2P CRYPTO EXCHANGE (most common false positive):
+  'нужен USDT TRC20', 'need USDT exchanger', 'INR to USDT',
+  'need bulk USDT', 'интересует тезер TRC20' — buying/selling
+  cryptocurrency is currency exchange, NOT payment-service procurement.
+  Large volume alone does NOT make it a lead.
+  Exception: 'нужен USDT settlement для казино' WITH explicit
+  business vertical IS a lead.
+
+BANK ACCOUNT / DROP PURCHASES:
+  'need indian bank accounts', 'need JK IDBI BOI accounts',
+  'нужна приемка по КЗ физ счета', 'need saving/corporate accounts',
+  'нужен абанк' — buying bank accounts or acquiring financial
+  infrastructure is NOT payment-service procurement.
+
+AGENT / CARDHOLDER RECRUITMENT:
+  'looking for Indian P2P agents/traders', 'need powerful Indian agent
+  to provide accounts', 'searching for cardholders', 'looking for
+  Four Parties agents' — recruiting money infrastructure partners
+  is NOT a buyer looking for PSP.
+
+DUE-DILIGENCE / NETWORKING:
+  'Кто работал с X?' / 'отзывы о X' / 'кто использует X' — reputation
+  check without stating own procurement need.
+
+MARKET-PULSE:
+  'ситуация с X', 'у всех отлетела SEPA?' — research, not procurement.
+
+SELLER VOICE:
+  'у нас есть X', 'мы предлагаем', capability lists with Telegram CTA,
+  sell-side aggregator pitches.
+
+WRONG VERTICAL:
+  - Affiliate/traffic: 'ищу трафик', 'ищу реклов', 'объёмы гембл'
+  - Brand/operator search: 'контакты казино X', 'MGA licensed brands'
+  - Corporate/legal: 'регистрация юрлица', 'готовая компания'
+  - Personal crypto wallet, hiring, consulting, M&A, complaints,
+    bot summaries, personal transactions (hotels, visas)
+
+═══════════════════════════════════════════════════════
+ALWAYS REAL_LEAD — never return MISTAKE for these:
+═══════════════════════════════════════════════════════
+  - Explicit 'ищу PSP/платежку/процессинг' + vertical/geo/volume
+  - 'у кого есть [payment solution]' possession questions
+  - '#buying' + specific geo/method (MB, MB only, specific countries)
+  - '+1' / 'присоединюсь к запросу' in payment context
+  - 'looking for [geo] from MB' — merchant bank sourcing
+
+Output strict JSON only.
+"""
+
+JUDGE_PROMPTS_BY_VERSION = {
+    "v1": _JUDGE_SYSTEM,
+    "v2": _JUDGE_SYSTEM_V2,
+}
 
 @cli.command(name="judge-leads")
+@click.option(
+    "--judge-version",
+    type=click.Choice(list(JUDGE_PROMPTS_BY_VERSION.keys())),
+    default="v1",
+    help="Judge prompt version. v1=original, v2=stricter FP filtering."
+)
 @click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True),
               help="Path to leads JSON (e.g. data/output/foo_leads_only.json).")
 @click.option("--output", "-o", "output_path", required=True, type=click.Path(),
@@ -528,11 +647,12 @@ Return JSON:
 @click.option("--chunk-size", type=int, default=50)
 @click.option("--resume-jsonl", type=click.Path(), default=None,
               help="Optional JSONL stream for resume. Defaults to <output>.judge.jsonl.")
-def judge_leads(input_path, output_path, concurrency, chunk_size, resume_jsonl):
+def judge_leads(input_path, output_path, concurrency, chunk_size, resume_jsonl,judge_version):
     """Have an independent LLM verdict each flagged lead as REAL_LEAD or MISTAKE."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import csv as _csv
 
+    judge_system = JUDGE_PROMPTS_BY_VERSION[judge_version]
     leads = json.loads(Path(input_path).read_text(encoding="utf-8"))
     console.print(f"Loaded {len(leads)} candidate leads from {input_path}")
 
@@ -583,7 +703,7 @@ def judge_leads(input_path, output_path, concurrency, chunk_size, resume_jsonl):
             rationale=d.get("rationale", "")[:200],
         )
         try:
-            data, _ = llm.complete_json(_JUDGE_SYSTEM, user, max_tokens=200)
+            data, _ = llm.complete_json(judge_system, user, max_tokens=200)
             verdict = str(data.get("verdict", "")).strip().upper()
             reason = str(data.get("reason", "")).strip()
         except Exception as exc:  # noqa: BLE001
@@ -665,7 +785,75 @@ def judge_leads(input_path, output_path, concurrency, chunk_size, resume_jsonl):
     usage = llm.usage.to_dict()
     console.print(f"Judge LLM cost (this run): ~${usage['estimated_cost_usd']:.3f}")
 
+@cli.command(name="build-rag")
+@click.option("--input", "-i", "input_path", required=True, type=click.Path(exists=True),
+              help="CSV with labeled examples. Must have 'text' and 'label' columns.")
+@click.option("--output", "-o", "db_path", default="data/rag/chroma",
+              help="Path to Chroma persistent storage.")
+@click.option("--label-col", default="label",
+              help="Column name for label (0/1 or true/false).")
+@click.option("--text-col", default="text",
+              help="Column name for message text.")
+@click.option("--id-col", default="message_id",
+              help="Column name for message ID (optional).")
+@click.option("--embedding-model", default="perplexity/pplx-embed-v1-0.6b",
+              help="Embedding model to use via OpenRouter.")
+@click.option("--dedup", is_flag=True, default=True,
+              help="Deduplicate by normalized text before indexing.")
+def build_rag(input_path, db_path, label_col, text_col, id_col,
+              embedding_model, dedup):
+    """Build a RAG index from a labeled CSV for few-shot injection."""
+    import pandas as pd
+    from .rag import RagConfig, RagIndex
 
+    console.rule("[bold]Building RAG index")
+
+    df = pd.read_csv(input_path)
+    console.print(f"Loaded {len(df)} rows from {input_path}")
+
+    # Validate columns
+    if text_col not in df.columns:
+        console.print(f"[red]Column '{text_col}' not found. Available: {list(df.columns)}")
+        return
+    if label_col not in df.columns:
+        console.print(f"[red]Column '{label_col}' not found. Available: {list(df.columns)}")
+        return
+
+    # Drop rows without text or label
+    df = df.dropna(subset=[text_col, label_col])
+    console.print(f"After dropping nulls: {len(df)} rows")
+
+    # Dedup by normalized text
+    if dedup:
+        def _norm(t):
+            import re
+            return re.sub(r"\s+", " ", str(t).strip().lower())
+        df["_norm"] = df[text_col].apply(_norm)
+        before = len(df)
+        df = df.drop_duplicates(subset="_norm")
+        console.print(f"After dedup: {len(df)} rows (dropped {before - len(df)})")
+
+    # Build examples list
+    examples = []
+    for _, row in df.iterrows():
+        examples.append({
+            "text": str(row[text_col]),
+            "label": row[label_col],
+            "message_id": str(row[id_col]) if id_col in df.columns else str(_),
+        })
+
+    label_counts = df[label_col].value_counts()
+    console.print(f"Label distribution: {dict(label_counts)}")
+
+    # Build index
+    cfg = RagConfig(
+        db_path=db_path,
+        embedding_model=embedding_model,
+        api_key=os.environ["OPENAI_API_KEY"],
+    )
+    index = RagIndex(cfg)
+    index.build(examples)
+    console.print(f"[green]RAG index built: {index.count()} examples in {db_path}")
 
 if __name__ == "__main__":
     cli()
