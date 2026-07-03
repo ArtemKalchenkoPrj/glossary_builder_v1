@@ -47,3 +47,4 @@ wheels/
 /tests/
 /data/
 /.DS_Store/
+/fusion_debug.log

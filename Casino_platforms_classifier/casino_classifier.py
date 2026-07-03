@@ -45,10 +45,10 @@ _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def _api_key() -> str:
-    key = os.environ.get("PSP_PROVIDERS_OPENROUTER_API_KEY")
+    key = os.environ.get("CASINO_PLATFORMS_API_KEY")
     if not key:
         raise RuntimeError(
-            "PSP_PROVIDERS_OPENROUTER_API_KEY not set in .env — "
+            "CASINO_PLATFORMS_API_KEY not set in .env — "
             "casino_classifier cannot call OpenRouter without it."
         )
     return key
