@@ -267,7 +267,7 @@ def _build_combined_text(current_text: str, context_texts: list[str]) -> str:
 # DB write
 # ---------------------------------------------------------------------------
 
-_INSERT_CLIENT_READY_SQL = """
+_INSERT_CLIENT_READY_SQL = f"""
 INSERT INTO {_TABLE_PREFIX}client_ready_leads (
     source_lead_id, username, text, msg_timestamp,
     lead_type, vertical, geo, payment_methods_mentioned, approved_by,
@@ -357,14 +357,14 @@ async def run_psp_provider_classifier(
     timestamp: Optional[datetime],
     conn_pool: asyncpg.Pool,
     dry_run: bool = False,
-) -> None:
+) -> bool:
     """Run the second-pass PSP-provider classifier on a message the primary
     pipeline rejected (is_lead=False).
     """
     text = (text or "").strip()
     if not text:
         print("[psp_provider_classifier] step 0: ПОРОЖНІЙ text — вихід одразу")
-        return
+        return False
     print("[psp_provider_classifier] step 0: старт, text =", text[:50])
 
     # --- Step 1: keyword filter по оригінальному тексту ---------------------
@@ -373,7 +373,7 @@ async def run_psp_provider_classifier(
     if hits == 0:
         print("[psp_provider_classifier] step 1: 0 збігів — вихід")
         logger.debug("psp_provider_classifier: no keyword hits, skipping message_id=%s", message_id)
-        return
+        return False
 
     # --- Step 2: context (тільки якщо пройшов keyword-фільтр) ---------------
     print("[psp_provider_classifier] step 2: пробую acquire() з conn_pool...")
@@ -406,7 +406,7 @@ async def run_psp_provider_classifier(
         logger.warning(
             "psp_provider_classifier: verification call failed for message_id=%s, skipping", message_id
         )
-        return
+        return False
 
     if verify_result.get("is_psp") is not True:
         print("[psp_provider_classifier] step 3: is_psp не True — вихід")
@@ -415,7 +415,7 @@ async def run_psp_provider_classifier(
             message_id,
             verify_result.get("reason"),
         )
-        return
+        return False
 
     # --- Step 4: LLM field extraction ----------------------------------------
     print("[psp_provider_classifier] step 4: викликаю extract LLM, model =", _extract_model())
@@ -434,7 +434,7 @@ async def run_psp_provider_classifier(
         logger.warning(
             "psp_provider_classifier: extraction call failed for message_id=%s, skipping", message_id
         )
-        return
+        return False
 
     if extract_result.get("judged_as") != "provider":
         print("[psp_provider_classifier] step 4: judged_as != provider — вихід")
@@ -443,7 +443,7 @@ async def run_psp_provider_classifier(
             message_id,
             extract_result.get("judged_as"),
         )
-        return
+        return False
 
     # --- Step 5: persist -------------------------------------------------------
     print("[psp_provider_classifier] step 5: записую результат...")
