@@ -310,13 +310,13 @@ async def run_casino_classifier(
     timestamp: Optional[datetime],
     conn_pool: asyncpg.Pool,
     dry_run: bool = False,
-) -> None:
+) -> bool:
     """Run the casino platform seeker classifier on an incoming message."""
 
     text = (text or "").strip()
     if not text:
         logger.debug("casino_classifier: empty text, skipping message_id=%s", message_id)
-        return
+        return False
     logger.debug("casino_classifier: start, message_id=%s text=%.50r", message_id, text)
 
     # --- Step 1: keyword filter -----------------------------------------------
@@ -324,7 +324,7 @@ async def run_casino_classifier(
     logger.debug("casino_classifier: keyword hits=%d message_id=%s", hits, message_id)
     if hits == 0:
         logger.debug("casino_classifier: no keyword hits, skipping message_id=%s", message_id)
-        return
+        return False
 
     # --- Step 2: LLM verification ---------------------------------------------
     logger.debug("casino_classifier: calling verify model=%s", _verify_model())
@@ -342,14 +342,14 @@ async def run_casino_classifier(
             "casino_classifier: verification failed for message_id=%s: %s",
             message_id, verify_result["_error"],
         )
-        return
+        return False
 
     if verify_result.get("is_lead") is not True:
         logger.debug(
             "casino_classifier: not a lead (message_id=%s): %s",
             message_id, verify_result.get("reason"),
         )
-        return
+        return False
 
     # --- Step 3: LLM field extraction -----------------------------------------
     logger.debug("casino_classifier: calling extract model=%s", _extract_model())
@@ -367,14 +367,14 @@ async def run_casino_classifier(
             "casino_classifier: extraction failed for message_id=%s: %s",
             message_id, extract_result["_error"],
         )
-        return
+        return False
 
     if extract_result.get("verdict") != "REAL_LEAD":
         logger.debug(
             "casino_classifier: judge downgraded verdict (message_id=%s): %s",
             message_id, extract_result.get("verdict"),
         )
-        return
+        return False
 
     # --- Step 4: persist ------------------------------------------------------
     await _persist_casino_lead(
@@ -386,3 +386,4 @@ async def run_casino_classifier(
         conn_pool=conn_pool,
         dry_run=dry_run,
     )
+    return True
