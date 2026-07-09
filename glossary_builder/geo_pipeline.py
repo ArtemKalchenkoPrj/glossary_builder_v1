@@ -231,9 +231,44 @@ async def apply_payment_geo(
 
     return result
 
+# ---------------------------------------------------------------------------
+# Stage 6 - log unknown payment methods
+# ---------------------------------------------------------------------------
+async def log_unknown_payment_methods(
+    payment_methods: list[str],
+    message_id: Optional[int],
+    conn: asyncpg.Connection,
+) -> None:
+    """Log payment methods that don't match any alias in payment_options."""
+    if not payment_methods or message_id is None:
+        return
+
+    unknown = []
+    for method in payment_methods:
+        key = method.strip().lower()
+        row = await conn.fetchrow(
+            "SELECT 1 FROM payment_options WHERE $1 = ANY(aliases)",
+            key,
+        )
+        if row is None:
+            unknown.append((method, message_id))
+            logger.warning(
+                "geo_pipeline: unknown payment method %r in message_id=%s",
+                method, message_id,
+            )
+
+    if unknown:
+        await conn.executemany(
+            """
+            INSERT INTO payment_unknown_values (raw_value, message_id)
+            VALUES ($1, $2)
+            ON CONFLICT (raw_value, message_id) DO NOTHING
+            """,
+            unknown,
+        )
 
 # ---------------------------------------------------------------------------
-# Stage 6 — main entry point
+# Stage 7 — main entry point
 # ---------------------------------------------------------------------------
 
 async def process_geo(
@@ -279,5 +314,8 @@ async def process_geo(
 
     # Stage 5 — derive extra geo from payment methods.
     result = await apply_payment_geo(expanded, payment_methods or [], payment_geo_map)
+
+    # Stage 6 — log unknown payment methods
+    await log_unknown_payment_methods(payment_methods or [], message_id, conn)
 
     return result
