@@ -48,3 +48,4 @@ wheels/
 /data/
 /.DS_Store/
 /fusion_debug.log
+/playground.ipynb
