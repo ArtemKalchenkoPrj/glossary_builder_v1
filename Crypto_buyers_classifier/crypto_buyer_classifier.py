@@ -270,11 +270,11 @@ SET
     "min"        = $9,
     "max"        = $10,
     confidence   = $11,
-    lead_type    = 'crypto_buyer'
+    lead_type    = 'crypto_buyer',
+    geo          = $12
 WHERE id = $1
 RETURNING id;
 """
-
 
 async def _persist_crypto_buyer_lead(
     *,
@@ -297,6 +297,7 @@ async def _persist_crypto_buyer_lead(
     network     = extracted.get("network") or []
     pay_asset   = extracted.get("pay_asset") or []
     pay_method  = extracted.get("pay_method") or []
+    geo         = extracted.get("geo") or []
     amount      = extracted.get("amount")
     min_val     = extracted.get("min")
     max_val     = extracted.get("max")
@@ -317,6 +318,7 @@ async def _persist_crypto_buyer_lead(
         print(f"  network         : {network}")
         print(f"  pay_asset       : {pay_asset}")
         print(f"  pay_method      : {pay_method}")
+        print(f"  geo             : {geo}")
         print(f"  amount          : {amount}")
         print(f"  min             : {min_val}")
         print(f"  max             : {max_val}")
@@ -338,13 +340,13 @@ async def _persist_crypto_buyer_lead(
             min_val,
             max_val,
             confidence,
+            json.dumps(geo, ensure_ascii=False),  # $12
         )
 
     logger.info(
-        "crypto_buyer_classifier: updated dirty row id=%s company=%s asset=%s",
-        row["id"] if row else None, company, asset,
+        "crypto_buyer_classifier: updated dirty row id=%s company=%s asset=%s geo=%s",
+        row["id"] if row else None, company, asset, geo,
     )
-
 
 # ---------------------------------------------------------------------------
 # Public entry point
