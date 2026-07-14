@@ -276,6 +276,7 @@ def _parse_dt(value) -> Optional[datetime]:
 async def classify(body: ClassifyRequest) -> dict:
     cfg = _state.cfg
 
+
     context: list[Message] | None = None
     if body.context is not None:
         context = [msg.to_message() for msg in body.context]
@@ -344,46 +345,32 @@ async def classify(body: ClassifyRequest) -> dict:
                     result.get("payment_methods_mentioned"),
                 )
 
-            result = await _persist(body.group_id, result)
-            db_ok = result.get("db_write_status") == "ok"
+            try:
+                result = await _persist(body.group_id, result)
+                db_ok = result.get("db_write_status") == "ok"
 
-            logger.info(
-                "[classify] persisted message_id=%s db_ok=%s db_id=%s",
-                body.message_id, db_ok, result.get("db_id")
-            )
-
-            if (not is_lead or verdict == "MISTAKE") and db_ok:
-                logger.info("[classify] running crypto_buyer_classifier message_id=%s", body.message_id)
-                crypto_buyer_classified = await run_crypto_buyer_classifier(
-                    text=body.text,
-                    source_lead_id=result.get("db_id"),
-                    message_id=body.message_id,
-                    username=body.username,
-                    conn_pool=_state.pool,
-                )
                 logger.info(
-                    "[classify] crypto_buyer_classifier done message_id=%s crypto_buyer_classified=%s",
-                    body.message_id, crypto_buyer_classified
+                    "[classify] persisted message_id=%s db_ok=%s db_id=%s",
+                    body.message_id, db_ok, result.get("db_id")
                 )
 
-                if not crypto_buyer_classified:
-                    logger.info("[classify] running psp_provider_classifier message_id=%s", body.message_id)
-                    psp_classified = await run_psp_provider_classifier(
+                if (not is_lead or verdict == "MISTAKE") and db_ok:
+                    logger.info("[classify] running crypto_buyer_classifier message_id=%s", body.message_id)
+                    crypto_buyer_classified = await run_crypto_buyer_classifier(
                         text=body.text,
                         source_lead_id=result.get("db_id"),
                         message_id=body.message_id,
                         username=body.username,
-                        timestamp=body.timestamp,
                         conn_pool=_state.pool,
                     )
                     logger.info(
-                        "[classify] psp_classifier done message_id=%s psp_classified=%s",
-                        body.message_id, psp_classified
+                        "[classify] crypto_buyer_classifier done message_id=%s crypto_buyer_classified=%s",
+                        body.message_id, crypto_buyer_classified
                     )
 
-                    if not psp_classified:
-                        logger.info("[classify] running casino_classifier message_id=%s", body.message_id)
-                        casino_classified = await run_casino_classifier(
+                    if not crypto_buyer_classified:
+                        logger.info("[classify] running psp_provider_classifier message_id=%s", body.message_id)
+                        psp_classified = await run_psp_provider_classifier(
                             text=body.text,
                             source_lead_id=result.get("db_id"),
                             message_id=body.message_id,
@@ -391,21 +378,42 @@ async def classify(body: ClassifyRequest) -> dict:
                             timestamp=body.timestamp,
                             conn_pool=_state.pool,
                         )
-                        logger.info("[classify] casino_classifier done message_id=%s casino_classified=%s",
-                                    body.message_id, casino_classified)
+                        logger.info(
+                            "[classify] psp_classifier done message_id=%s psp_classified=%s",
+                            body.message_id, psp_classified
+                        )
 
-                    if not psp_classified and not casino_classified:
-                        logger.info("[classify] running iban_lead_classifier message_id=%s", body.message_id)
-                        iban_classified = await run_iban_lead_classifier(
-                            text=body.text,
-                            source_lead_id=result.get("db_id"),
-                            message_id=body.message_id,
-                            username=body.username,
-                            timestamp=body.timestamp,
-                            conn_pool=_state.pool,
-                        )
-                        logger.info("[classify] iban_classifier done message_id=%s iban_classified=%s",
-                                    body.message_id, iban_classified)
+                        if not psp_classified:
+                            logger.info("[classify] running casino_classifier message_id=%s", body.message_id)
+                            casino_classified = await run_casino_classifier(
+                                text=body.text,
+                                source_lead_id=result.get("db_id"),
+                                message_id=body.message_id,
+                                username=body.username,
+                                timestamp=body.timestamp,
+                                conn_pool=_state.pool,
+                            )
+                            logger.info("[classify] casino_classifier done message_id=%s casino_classified=%s",
+                                        body.message_id, casino_classified)
+
+                            if not casino_classified:
+                                logger.info("[classify] running iban_lead_classifier message_id=%s", body.message_id)
+                                iban_classified = await run_iban_lead_classifier(
+                                    text=body.text,
+                                    source_lead_id=result.get("db_id"),
+                                    message_id=body.message_id,
+                                    username=body.username,
+                                    timestamp=body.timestamp,
+                                    conn_pool=_state.pool,
+                                )
+                                logger.info("[classify] iban_classifier done message_id=%s iban_classified=%s",
+                                            body.message_id, iban_classified)
+
+            except Exception as exc:
+                logger.error(
+                    "[classify] persist/classify FAILED message_id=%s error=%s",
+                    body.message_id, exc, exc_info=True
+                )
 
             logger.info("[classify] done message_id=%s", body.message_id)
 

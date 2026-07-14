@@ -1,142 +1,75 @@
 """Message deduplication logic.
 
-Deduplicates incoming Telegram messages before they reach classification.
+Two independent checks before classification:
 
-Two independent problems are solved here:
+1. Time-based block — if the same user sent ANY message within the last
+   3 minutes, the new message is treated as a duplicate. Prevents
+   rapid-fire duplicates regardless of text.
 
-1. Race condition — two messages from the same user arrive within
-   milliseconds of each other and both would otherwise pass the check
-   before either is written back. Solved with a Postgres advisory
-   transaction lock (`pg_advisory_xact_lock`) scoped to `username`, so
-   concurrent calls for the same user are fully serialised for the
-   short duration of the check-and-capture step (not for the whole
-   classification, which can take seconds).
+2. Text-based block — if the same user sent the SAME text (by MD5 hash)
+   within the last 24 hours, the new message is treated as a duplicate.
 
-2. Same message, different wording — a sender broadcasts the same
-   message to several similar-topic chats, but not always with
-   identical text (e.g. once in English, once in Russian). Exact text
-   matching misses this. Instead, once a user has been classified as a
-   `lead`, ANY message from them within the next 24h is treated as a
-   duplicate, regardless of text. Only when the last classification was
-   `not_lead` do we fall back to exact text matching (username + text
-   hash + 24h window) — a `not_lead` message can plausibly be followed
-   by a genuinely different, on-topic message later.
+Race condition protection: Postgres advisory transaction lock scoped to
+`username` serialises concurrent calls for the same user.
 
 Table DDL (run once):
 
     CREATE TABLE dedup_log (
-        username        TEXT PRIMARY KEY,
-        text_hash       TEXT,
-        classified_as   TEXT NOT NULL DEFAULT 'not_lead'
-                            CHECK (classified_as IN ('in_progress', 'lead', 'not_lead')),
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        username    TEXT PRIMARY KEY,
+        text_hash   TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-Migration from the old (text_hash-only) schema:
+Migration from old schema (if classified_as column exists):
 
-    ALTER TABLE dedup_log
-        ADD COLUMN classified_as TEXT NOT NULL DEFAULT 'not_lead'
-            CHECK (classified_as IN ('in_progress', 'lead', 'not_lead'));
+    ALTER TABLE dedup_log DROP COLUMN classified_as;
 
-`classified_as` semantics:
-
-    in_progress  — a message from this user is currently being classified.
-                   Any other message from the same user is ignored until
-                   either classification finishes (see `mark_classified`)
-                   or `_IN_PROGRESS_TTL` elapses (stale-lock protection).
-    lead         — last known classification was a lead. Ignore
-                   everything from this user for the next 24h.
-    not_lead     — last known classification was not a lead. Only exact
-                   repeats (same text, same 24h window) are ignored.
-
-Sync with `classified_messages_dirty`:
-
-    `classified_as` is a cache, not the source of truth. Before making a
-    decision (and only when the current state is NOT `in_progress`), we
-    re-check `classified_messages_dirty.manual_approval` for this user's
-    latest message and refresh `classified_as` accordingly:
-
-        manual_approval IS NULL or False     -> not_lead
-        manual_approval IS True or 'pending' -> lead
-
-    This means a human downgrading a lead to `False` re-opens the window
-    for that user on their very next message, even within 24h.
-
-Usage (in the caller, e.g. the FastAPI background task):
+Usage:
 
     if await is_duplicate(body.username, body.text, body.timestamp, conn):
-        ...  # write a "duplicate" row, skip classification, return
-
-    try:
-        result = await classify_single_message(...)
-        result = await _persist(body.group_id, result)
-        await mark_classified(body.username, result.get("is_lead"), conn)
-    except Exception:
-        await mark_classified(body.username, is_lead=False, conn)
-        raise
-
-`mark_classified` MUST be called exactly once for every username that
-`is_duplicate` returned False for — including on failure — otherwise the
-user stays stuck as `in_progress` until `_IN_PROGRESS_TTL` expires.
+        ...  # skip classification, write duplicate row, return
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional
 
 import asyncpg
-
-import os
-from pathlib import Path
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
-_WINDOW = timedelta(hours=24)
-_IN_PROGRESS_TTL = timedelta(minutes=2)
-_TABLE_PREFIX = os.getenv('TABLE_PREFIX') or ""
+_HOLD_WINDOW = timedelta(minutes=3)
+_TEXT_WINDOW = timedelta(hours=24)
+_TABLE_PREFIX = os.getenv("TABLE_PREFIX") or ""
 
 _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1))"
 
 _SELECT_SQL = f"""
-SELECT text_hash, classified_as, created_at
+SELECT text_hash, created_at
 FROM {_TABLE_PREFIX}dedup_log
 WHERE username = $1
 FOR UPDATE
 """
 
-_CAPTURE_INSERT_SQL = f"""
-INSERT INTO {_TABLE_PREFIX}dedup_log (username, text_hash, classified_as, created_at)
-VALUES ($1, $2, 'in_progress', $3)
+_INSERT_SQL = f"""
+INSERT INTO {_TABLE_PREFIX}dedup_log (username, text_hash, created_at)
+VALUES ($1, $2, $3)
 """
 
-_CAPTURE_UPDATE_SQL = f"""
+_UPDATE_SQL = f"""
 UPDATE {_TABLE_PREFIX}dedup_log
-SET text_hash = $2, classified_as = 'in_progress', created_at = $3
+SET text_hash = $2, created_at = $3
 WHERE username = $1
 """
 
-_SYNC_SELECT_SQL = f"""
-SELECT manual_approval
-FROM {_TABLE_PREFIX}classified_messages_dirty
-WHERE username = $1
-ORDER BY timestamp DESC
-LIMIT 1
-"""
-
-_SYNC_UPDATE_SQL = f"""
-UPDATE {_TABLE_PREFIX}dedup_log
-SET classified_as = $2
-WHERE username = $1
-"""
-
-_MARK_SQL = f"""
-UPDATE {_TABLE_PREFIX}dedup_log
-SET classified_as = $2
-WHERE username = $1
-"""
 
 def _hash(text: str) -> str:
     return hashlib.md5(text.strip().lower().encode()).hexdigest()
@@ -148,21 +81,6 @@ def _aware(dt: datetime) -> datetime:
     return dt
 
 
-def _manual_approval_to_state(manual_approval) -> str:
-    """Map classified_messages_dirty.manual_approval to a dedup_log state.
-
-    None / False               -> 'not_lead'  (explicit non-lead, or LLM
-                                                 verdict never reached a human)
-    True / 'pending' / other   -> 'lead'       (LLM said lead; whether or
-                                                 not a human confirmed yet,
-                                                 we still don't want more
-                                                 duplicates from this user)
-    """
-    if manual_approval is None or manual_approval is False:
-        return "not_lead"
-    return "lead"
-
-
 async def is_duplicate(
     username: Optional[str],
     text: str,
@@ -172,12 +90,8 @@ async def is_duplicate(
     """Check whether this message should be skipped as a duplicate.
 
     Returns:
-        True  — duplicate (or another message from this user is already
-                being classified) — caller should silently ignore.
-        False — caller should proceed to classification. This function
-                has already atomically marked the user as `in_progress`
-                in dedup_log; the caller MUST eventually call
-                `mark_classified()` for this username, even on error.
+        True  — duplicate, caller should silently ignore.
+        False — not a duplicate, caller should proceed to classification.
     """
     if not username:
         return False
@@ -190,65 +104,28 @@ async def is_duplicate(
     new_hash = _hash(text)
 
     async with conn.transaction():
-        # Serialise all concurrent calls for this username. The lock is
-        # held only for this transaction (the check-and-capture step),
-        # not for the whole classification that follows.
         await conn.execute(_LOCK_SQL, username)
-
         row = await conn.fetchrow(_SELECT_SQL, username)
 
         if row is None:
-            await conn.execute(_CAPTURE_INSERT_SQL, username, new_hash, now)
+            await conn.execute(_INSERT_SQL, username, new_hash, now)
             return False
 
-        classified_as: str = row["classified_as"]
-        created_at: datetime = _aware(row["created_at"])
-        stored_hash: Optional[str] = row["text_hash"]
+        created_at = _aware(row["created_at"])
+        stored_hash = row["text_hash"]
 
-        if classified_as == "in_progress":
-            if now - created_at < _IN_PROGRESS_TTL:
-                return True  # someone else is classifying this user right now
-            # stale lock (crashed/timed-out worker) — treat as free
-            await conn.execute(_CAPTURE_UPDATE_SQL, username, new_hash, now)
-            return False
+        logger.info(
+            "[dedup] username=%s now=%s created_at=%s diff=%s new_hash=%s stored_hash=%s",
+            username, now, created_at, now - created_at, new_hash, stored_hash
+        )
 
-        # classified_as is 'lead' or 'not_lead' here — sync with the
-        # source of truth before deciding.
-        sync_row = await conn.fetchrow(_SYNC_SELECT_SQL, username)
-        if sync_row is not None:
-            synced_state = _manual_approval_to_state(sync_row["manual_approval"])
-            if synced_state != classified_as:
-                await conn.execute(_SYNC_UPDATE_SQL, username, synced_state)
-                classified_as = synced_state
-
-        if classified_as == "lead":
-            if now - created_at < _WINDOW:
-                return True
-            await conn.execute(_CAPTURE_UPDATE_SQL, username, new_hash, now)
-            return False
-
-        # classified_as == 'not_lead' -> fall back to exact-text matching
-        if stored_hash == new_hash and now - created_at < _WINDOW:
+        if now - created_at < _HOLD_WINDOW:
+            logger.info("[dedup] DUPLICATE: hold window")
             return True
 
-        await conn.execute(_CAPTURE_UPDATE_SQL, username, new_hash, now)
+        if stored_hash == new_hash and now - created_at < _TEXT_WINDOW:
+            logger.info("[dedup] DUPLICATE: same text")
+            return True
+
+        await conn.execute(_UPDATE_SQL, username, new_hash, now)
         return False
-
-
-async def mark_classified(
-    username: Optional[str],
-    is_lead: bool,
-    conn: asyncpg.Connection,
-) -> None:
-    """Record the classification outcome, releasing the `in_progress` lock.
-
-    Must be called exactly once for every username that `is_duplicate`
-    returned False for — including on classification failure (pass
-    `is_lead=False` in that case) so the user is never stuck in
-    `in_progress` beyond `_IN_PROGRESS_TTL`.
-    """
-    if not username:
-        return
-
-    state = "lead" if is_lead else "not_lead"
-    await conn.execute(_MARK_SQL, username, state)
