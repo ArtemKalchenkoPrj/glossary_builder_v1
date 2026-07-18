@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from Casino_platforms_classifier.casino_classifier import run_casino_classifier
-from Crypto_buyers_classifier.crypto_buyer_classifier import run_crypto_buyer_classifier
+from glossary_builder_crypto_buyers.crypto_buyer_classifier import classify_crypto_buyer_single_message
 from IBAN_classifier.iban_lead_classifier import run_iban_lead_classifier
 from glossary_builder.cli import JUDGE_PROMPTS_BY_VERSION
 from glossary_builder.lead_extraction import LeadExtractionConfig, load_glossary
@@ -356,7 +356,7 @@ async def classify(body: ClassifyRequest) -> dict:
 
                 if (not is_lead or verdict == "MISTAKE") and db_ok:
                     logger.info("[classify] running crypto_buyer_classifier message_id=%s", body.message_id)
-                    crypto_buyer_classified = await run_crypto_buyer_classifier(
+                    crypto_buyer_classified = await classify_crypto_buyer_single_message(
                         text=body.text,
                         source_lead_id=result.get("db_id"),
                         message_id=body.message_id,
