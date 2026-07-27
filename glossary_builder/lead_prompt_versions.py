@@ -476,7 +476,7 @@ V5_01_SHORT_LEAD_DEFINITION = (
     "\n"
     "  (b) CONCRETE NEED specification — at least one of:\n"
     "      a specific vertical (iGaming/casino/forex/crypto/adult/nutra/\n"
-    "      dating/trading/MLM/subscription/etc.),\n"
+    "      dating/trading/MLM/subscription/call centers (often abbreviated as 'CC', 'кц', 'колл-центр', 'трафик кц')/etc.),\n"
     "      a specific geography (country/region),\n"
     "      a specific payment method (Blik/iDeal/USDT/etc.),\n"
     "      a volume / FTD / STD / approve-rate requirement,\n"
