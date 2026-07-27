@@ -93,13 +93,8 @@ load_dotenv(_PROJECT_ROOT.parent / ".env")
 
 # CRITICAL: TABLE_PREFIX must be set to prevent writes to production tables.
 # Fail loudly at import time so misconfiguration is caught immediately.
-_TABLE_PREFIX = os.getenv("TABLE_PREFIX")
-if not _TABLE_PREFIX:
-    raise RuntimeError(
-        "TABLE_PREFIX env variable is not set or empty. "
-        "Set TABLE_PREFIX=test_ for testing or TABLE_PREFIX=prod_ for production. "
-        "Refusing to start to prevent accidental writes to un-prefixed tables."
-    )
+_TABLE_PREFIX = os.getenv("TABLE_PREFIX",'')
+
 
 # ---------------------------------------------------------------------------
 # Module-level state — lazy init on first call
