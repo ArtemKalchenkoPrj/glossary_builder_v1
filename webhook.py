@@ -527,49 +527,36 @@ async def classify(body: ClassifyRequest) -> dict:
                     return
 
             logger.info(
-                "[classify] dedup=ok → launching parallel pipelines "
-                "message_id=%s", body.message_id,
+                "[classify] dedup=ok → starting sequential pipelines message_id=%s",
+                body.message_id,
             )
 
-            # ── Parallel pipelines ────────────────────────────────────────
-            buyer_task = asyncio.to_thread(
-                classify_single_message,
-                text=body.text,
-                glossary=_state.glossary,
-                llm=_state.llm,
-                cfg=cfg,
-                message_id=body.message_id,
-                username=body.username,
-                timestamp=body.timestamp,
-                context=context,
-                rag_index=_state.rag_index,
-                judge_system=_state.judge_system,
-            )
-            provider_task = asyncio.to_thread(
-                classify_provider_message,
-                text=body.text,
-                glossary=_state.provider_glossary,
-                llm=_state.provider_llm,
-                cfg=_state.provider_cfg,
-                message_id=body.message_id,
-                username=body.username,
-                timestamp=body.timestamp,
-                context=context,
-            )
+            buyer_result = None
+            provider_result = None
 
-            buyer_result, provider_result = await asyncio.gather(
-                buyer_task, provider_task,
-                return_exceptions=True,
-            )
-
-            # ── Buyer result ──────────────────────────────────────────────
-            if isinstance(buyer_result, Exception):
+            # ── 1. Buyer Pipeline ─────────────────────────────────────────
+            try:
+                buyer_result = await asyncio.to_thread(
+                    classify_single_message,
+                    text=body.text,
+                    glossary=_state.glossary,
+                    llm=_state.llm,
+                    cfg=cfg,
+                    message_id=body.message_id,
+                    username=body.username,
+                    timestamp=body.timestamp,
+                    context=context,
+                    rag_index=_state.rag_index,
+                    judge_system=_state.judge_system,
+                )
+            except Exception as exc:
                 logger.error(
                     "[buyer] PIPELINE ERROR message_id=%s: %s",
-                    body.message_id, buyer_result, exc_info=buyer_result,
+                    body.message_id, exc, exc_info=True,
                 )
-                buyer_result = None
-            else:
+
+            # ── Buyer Result & Persist ────────────────────────────────────
+            if buyer_result is not None:
                 is_lead = buyer_result.get("is_lead")
                 verdict = buyer_result.get("verdict")
                 lead_type = buyer_result.get("lead_type")
@@ -596,8 +583,7 @@ async def classify(body: ClassifyRequest) -> dict:
                         (buyer_result.get("rationale") or "")[:100],
                     )
 
-            # ── Buyer persist + cascade ───────────────────────────────────
-            if buyer_result is not None:
+                # Buyer Persist + Cascades
                 try:
                     buyer_result = await _persist_buyer(
                         body.group_id, buyer_result
@@ -615,10 +601,7 @@ async def classify(body: ClassifyRequest) -> dict:
                         source = buyer_result.get("db_id")
 
                         # Crypto buyer
-                        logger.info(
-                            "[cascade] crypto_buyer start message_id=%s",
-                            body.message_id,
-                        )
+                        logger.info("[cascade] crypto_buyer start message_id=%s", body.message_id)
                         crypto_ok = await classify_crypto_buyer_single_message(
                             text=body.text,
                             source_lead_id=source,
@@ -626,17 +609,11 @@ async def classify(body: ClassifyRequest) -> dict:
                             username=body.username,
                             conn_pool=_state.pool,
                         )
-                        logger.info(
-                            "[cascade] crypto_buyer done message_id=%s classified=%s",
-                            body.message_id, crypto_ok,
-                        )
+                        logger.info("[cascade] crypto_buyer done message_id=%s classified=%s", body.message_id, crypto_ok)
 
                         if not crypto_ok:
                             # Casino
-                            logger.info(
-                                "[cascade] casino start message_id=%s",
-                                body.message_id,
-                            )
+                            logger.info("[cascade] casino start message_id=%s", body.message_id)
                             casino_ok = await run_casino_classifier(
                                 text=body.text,
                                 source_lead_id=source,
@@ -645,17 +622,11 @@ async def classify(body: ClassifyRequest) -> dict:
                                 timestamp=body.timestamp,
                                 conn_pool=_state.pool,
                             )
-                            logger.info(
-                                "[cascade] casino done message_id=%s classified=%s",
-                                body.message_id, casino_ok,
-                            )
+                            logger.info("[cascade] casino done message_id=%s classified=%s", body.message_id, casino_ok)
 
                             if not casino_ok:
                                 # IBAN
-                                logger.info(
-                                    "[cascade] iban start message_id=%s",
-                                    body.message_id,
-                                )
+                                logger.info("[cascade] iban start message_id=%s", body.message_id)
                                 iban_ok = await run_iban_lead_classifier(
                                     text=body.text,
                                     source_lead_id=source,
@@ -664,16 +635,10 @@ async def classify(body: ClassifyRequest) -> dict:
                                     timestamp=body.timestamp,
                                     conn_pool=_state.pool,
                                 )
-                                logger.info(
-                                    "[cascade] iban done message_id=%s classified=%s",
-                                    body.message_id, iban_ok,
-                                )
+                                logger.info("[cascade] iban done message_id=%s classified=%s", body.message_id, iban_ok)
 
                                 if not iban_ok:
-                                    logger.info(
-                                        "[cascade] no classifier matched "
-                                        "message_id=%s", body.message_id,
-                                    )
+                                    logger.info("[cascade] no classifier matched message_id=%s", body.message_id)
 
                 except Exception as exc:
                     logger.error(
@@ -681,14 +646,27 @@ async def classify(body: ClassifyRequest) -> dict:
                         body.message_id, exc, exc_info=True,
                     )
 
-            # ── Provider result ───────────────────────────────────────────
-            if isinstance(provider_result, Exception):
+            # ── 2. Provider Pipeline ──────────────────────────────────────
+            try:
+                provider_result = await asyncio.to_thread(
+                    classify_provider_message,
+                    text=body.text,
+                    glossary=_state.provider_glossary,
+                    llm=_state.provider_llm,
+                    cfg=_state.provider_cfg,
+                    message_id=body.message_id,
+                    username=body.username,
+                    timestamp=body.timestamp,
+                    context=context,
+                )
+            except Exception as exc:
                 logger.error(
                     "[provider] PIPELINE ERROR message_id=%s: %s",
-                    body.message_id, provider_result, exc_info=provider_result,
+                    body.message_id, exc, exc_info=True,
                 )
-                provider_result = None
-            else:
+
+            # ── Provider Result & Persist ─────────────────────────────────
+            if provider_result is not None:
                 is_prov = provider_result.get("is_provider")
                 verdict = provider_result.get("verdict")
                 conf = provider_result.get("confidence")
@@ -735,8 +713,7 @@ async def classify(body: ClassifyRequest) -> dict:
                         (rationale or "")[:100],
                     )
 
-            # ── Provider persist ──────────────────────────────────────────
-            if provider_result is not None:
+                # Provider Persist
                 try:
                     provider_result = await _persist_provider(
                         body.group_id, provider_result,
