@@ -808,7 +808,8 @@ def build_rag(input_path, db_path, label_col, text_col, id_col,
 
     console.rule("[bold]Building RAG index")
 
-    df = pd.read_csv(input_path)
+    df = pd.read_csv(input_path, sep=None, engine="python")
+
     console.print(f"Loaded {len(df)} rows from {input_path}")
 
     # Validate columns

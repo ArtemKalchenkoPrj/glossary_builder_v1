@@ -51,3 +51,7 @@ wheels/
 /playground.ipynb
 /checklist.md
 /data.rar
+/collect_corpus.ipynb
+/eval_provider.ipynb
+/PSP_providers_improvement.ipynb
+/summary_pipeline.ipynb

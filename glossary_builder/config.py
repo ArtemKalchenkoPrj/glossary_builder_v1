@@ -62,6 +62,8 @@ class LLMConfig:
     max_retries: int = 3
     concurrency: int = int(os.getenv("GLOSSARY_CONCURRENCY", "4"))
 
+    api_key: str | None = None
+    base_url: str | None = None
 
 @dataclass
 class PhraseConfig:

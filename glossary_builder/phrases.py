@@ -179,9 +179,13 @@ def extract_phrases(
         try:
             data, _ = llm.complete_json(system, user, max_tokens=900)
         except Exception:
-            # One bad batch shouldn't kill the whole stage.
             continue
-        for item in (data.get("phrases") or []):
+            # LLM sometimes returns the array directly instead of {"phrases": [...]}
+        if isinstance(data, list):
+            phrases_list = data
+        else:
+            phrases_list = data.get("phrases") or []
+        for item in phrases_list:
             if not isinstance(item, dict):
                 continue
             phrase = _normalize_phrase(item.get("phrase", ""))

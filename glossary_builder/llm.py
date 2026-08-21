@@ -41,14 +41,20 @@ _DEFAULTS = {
 # Sources: provider pricing pages, May 2026.
 _PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
     # Anthropic
-    "claude-sonnet-4-5":  {"input": 3.00, "output": 15.00},
-    "claude-haiku-4-5":   {"input": 1.00, "output":  5.00},
-    "claude-opus-4-5":    {"input": 15.0, "output": 75.00},
-    # OpenAI
-    "gpt-4o":             {"input": 2.50, "output": 10.00},
-    "gpt-4o-mini":        {"input": 0.15, "output":  0.60},
-    "gpt-4.1":            {"input": 2.00, "output":  8.00},
-    "gpt-4.1-mini":       {"input": 0.40, "output":  1.60},
+    "claude-sonnet-4-5":       {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5":        {"input": 1.00, "output":  5.00},
+    "claude-opus-4-5":         {"input": 15.0, "output": 75.00},
+    # OpenAI (bare)
+    "gpt-4o":                  {"input": 2.50, "output": 10.00},
+    "gpt-4o-mini":             {"input": 0.15, "output":  0.60},
+    "gpt-4.1":                 {"input": 2.00, "output":  8.00},
+    "gpt-4.1-mini":            {"input": 0.40, "output":  1.60},
+    "gpt-4.1-nano":            {"input": 0.10, "output":  0.40},
+    # OpenAI via OpenRouter (with prefix)
+    "openai/gpt-4.1-nano":     {"input": 0.10, "output":  0.40},
+    "openai/gpt-4.1-mini":     {"input": 0.40, "output":  1.60},
+    "openai/gpt-4.1":          {"input": 2.00, "output":  8.00},
+    "openai/gpt-4o-mini":      {"input": 0.15, "output":  0.60},
 }
 
 
@@ -198,7 +204,10 @@ class LLMClient:
                     "openai package not installed. Run: "
                     "pip install -r requirements.txt"
                 ) from exc
-            return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            return OpenAI(
+                api_key=self.config.api_key or os.environ["OPENAI_API_KEY"],
+                base_url=self.config.base_url or None,
+            )
         elif self.provider == "ollama":
             from openai import OpenAI
             return OpenAI(
