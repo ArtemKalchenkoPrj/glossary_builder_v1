@@ -261,17 +261,18 @@ def _run_provider_judge(
     verdict is one of: 'REAL_PROVIDER', 'MISTAKE', 'REVIEW' (fallback).
     """
     user = _PROVIDER_JUDGE_USER_TEMPLATE.format(
-        message_id    = decision.message_id or "?",
-        username      = decision.username or "anon",
-        timestamp     = decision.timestamp or "?",
-        text          = (decision.text or "").replace("\n", " ").strip()[:500],
-        confidence    = f"{decision.confidence:.2f}",
-        geo           = ", ".join(decision.geo) or "—",
-        methods       = ", ".join(decision.methods) or "—",
-        vertical      = ", ".join(decision.vertical) or "—",
-        company       = decision.company or "—",
-        evidence_quote= (decision.evidence_quote or "")[:200],
-        rationale     = (decision.rationale or "")[:200],
+        message_id=decision.message_id or "?",
+        username=decision.username or "anon",
+        timestamp=decision.timestamp or "?",
+        text=(decision.text or "").replace("\n", " ").strip()[:500],
+        confidence=f"{decision.confidence:.2f}",
+        geo=", ".join(decision.geo) or "—",
+        methods=", ".join(decision.methods) or "—",
+        vertical=", ".join(decision.vertical) or "—",
+        company=decision.company or "—",
+        position=getattr(decision, "position", None) or "—",
+        evidence_quote=(decision.evidence_quote or "")[:200],
+        rationale=(decision.rationale or "")[:200],
     )
     try:
         llm.set_stage("provider_judge")

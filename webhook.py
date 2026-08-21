@@ -75,7 +75,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     is_lead, confidence, lead_type, intent, interest_level,
     vertical, geo, payment_methods_mentioned,
     evidence_quote, rationale, glossary_terms_seen, elapsed_ms,
-    verdict, judge_reason, company,
+    verdict, judge_reason, company, position,
     pipeline,
     db_write_status, db_write_error,
     classified_at
@@ -84,9 +84,9 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     $6,  $7,  $8,  $9,  $10,
     $11, $12, $13,
     $14, $15, $16, $17,
-    $18, $19, $20,
-    $21,
-    $22, $23,
+    $18, $19, $20, $21,
+    $22,
+    $23, $24,
     NOW()
 )
 ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
@@ -108,6 +108,7 @@ ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
     verdict                   = EXCLUDED.verdict,
     judge_reason              = EXCLUDED.judge_reason,
     company                   = EXCLUDED.company,
+    position                  = EXCLUDED.position,
     pipeline                  = EXCLUDED.pipeline,
     db_write_status           = EXCLUDED.db_write_status,
     db_write_error            = EXCLUDED.db_write_error,
@@ -376,9 +377,10 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
                 result.get("verdict"),  # $18
                 result.get("judge_reason"),  # $19
                 None,  # $20 company
-                "buyer",  # $21 pipeline
-                "ok",  # $22 db_write_status
-                None,  # $23 db_write_error
+                None,  # $21 position
+                "buyer",  # $22 pipeline
+                "ok",  # $23 db_write_status
+                None,  # $24 db_write_error
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -450,9 +452,10 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                 result.get("verdict"),  # $18
                 result.get("judge_reason"),  # $19
                 result.get("company"),  # $20 company
-                "provider",  # $21 pipeline
-                "ok",  # $22 db_write_status
-                None,  # $23 db_write_error
+                result.get("position"),  # $21 position
+                "provider",  # $22 pipeline
+                "ok",  # $23 db_write_status
+                None,  # $24 db_write_error
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -507,15 +510,19 @@ async def classify(body: ClassifyRequest) -> dict:
                     )
                     await conn.execute(
                         _UPSERT_SQL,
-                        body.group_id, body.message_id, body.timestamp,
-                        body.username, body.text,
-                        False, None, "none", None, None,
-                        _jsonb([]), _jsonb([]), _jsonb([]),
-                        None,
+                        body.group_id, body.message_id, body.timestamp,  # $1, $2, $3
+                        body.username, body.text,  # $4, $5
+                        False, None, "none", None, None,  # $6, $7, $8, $9, $10
+                        _jsonb([]), _jsonb([]), _jsonb([]),  # $11, $12, $13
+                        None,  # $14 evidence_quote
                         f"[duplicate text='{(body.text or '').strip()[:50]}'"
-                        f" user={body.username}]",
-                        _jsonb([]), None, None, None, None,
-                        "dedup", "ok", None,
+                        f" user={body.username}]",  # $15 rationale
+                        _jsonb([]), None, None, None,  # $16, $17, $18, $19
+                        None,  # $20 company
+                        None,  # $21 position
+                        "dedup",  # $22 pipeline
+                        "ok",  # $23 db_write_status
+                        None,  # $24 db_write_error
                     )
                     return
 
@@ -697,9 +704,10 @@ async def classify(body: ClassifyRequest) -> dict:
                 if is_prov and verdict == "REAL_PROVIDER":
                     logger.info(
                         "[provider] PROVIDER ✓ message_id=%s "
-                        "company=%r geo=%s vertical=%s methods=%s",
+                        "company=%r position=%r geo=%s vertical=%s methods=%s",
                         body.message_id,
                         provider_result.get("company"),
+                        provider_result.get("position"),
                         provider_result.get("geo"),
                         provider_result.get("vertical"),
                         provider_result.get("methods"),
@@ -760,7 +768,6 @@ async def classify(body: ClassifyRequest) -> dict:
 
     asyncio.create_task(_run())
     return {"status": "accepted", "message_id": body.message_id}
-
 
 @app.get("/health")
 async def health() -> dict:

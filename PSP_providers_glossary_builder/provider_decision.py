@@ -36,6 +36,7 @@ class ProviderDecision:
     vertical: list[str]         # verticals they serve (igaming, forex, adult…)
     company:  str | None        # company / brand name if stated
 
+
     # ── Evidence ──────────────────────────────────────────────────────────────
     evidence_quote:     str     # verbatim quote from the message
     rationale:          str     # one-two sentence English explanation
@@ -51,6 +52,8 @@ class ProviderDecision:
     # ── Diagnostics ───────────────────────────────────────────────────────────
     elapsed_ms:       float | None = None
     raw_llm_response: str   | None = None
+
+    position: str | None = None  # job title / role of the author if stated
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -71,13 +74,13 @@ class ProviderDecision:
             "methods":             ", ".join(self.methods),
             "vertical":            ", ".join(self.vertical),
             "company":             self.company or "",
+            "position":            self.position or "",
             "evidence_quote":      self.evidence_quote,
             "rationale":           self.rationale,
             "glossary_terms_seen": ", ".join(self.glossary_terms_seen),
             "elapsed_ms":          self.elapsed_ms,
             "text":                self.text,
         }
-
 
 # ── ProviderExtractionConfig ──────────────────────────────────────────────────
 
@@ -173,6 +176,12 @@ def _build_provider_decision(
         else None
     )
 
+    position_raw = data.get("position")
+    position: str | None = (
+        str(position_raw).strip() if isinstance(position_raw, str) and position_raw.strip()
+        else None
+    )
+
     # Code-level safeguard: if the LLM quoted something not in the message,
     # downgrade to is_provider=False (same logic as lead_extraction.py).
     if is_provider and evidence_quote and cfg and cfg.validate_evidence_quote:
@@ -194,12 +203,12 @@ def _build_provider_decision(
         methods             = _list_str(data.get("methods")),
         vertical            = _list_str(data.get("vertical")),
         company             = company if is_provider else None,
+        position            = position if is_provider else None,
         evidence_quote      = evidence_quote,
         rationale           = rationale,
         glossary_terms_seen = [e["term"] for e in glossary_hits],
         raw_llm_response    = raw,
     )
-
 
 # ── Evidence-quote validator (copied from lead_extraction.py) ─────────────────
 

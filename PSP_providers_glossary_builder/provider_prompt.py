@@ -522,19 +522,21 @@ Return strict JSON with this exact shape:
   "vertical": ["igaming" | "casino" | "sportsbook" | "forex" | "crypto" | \
 "adult" | "nutra" | "dating" | "other" | "unknown", ...],
   "company": "<company or brand name, or null>",
+  "position": "<author's job title / role, or null>",
   "evidence_quote": "<short verbatim quote from the target message, <=160 chars>",
   "rationale": "<one or two sentences explaining the call, in English>"
 }}
 
 RULES
 - Quote evidence VERBATIM from the target message — do not paraphrase.
-- If is_provider is false: confidence 0.6-1.0, all lists empty, company null.
+- If is_provider is false: confidence 0.6-1.0, all lists empty, company null, position null.
 - geo: short tokens ('UK', 'DE', 'EU', 'LATAM') or country names; empty if none stated.
 - methods: payment methods the provider SUPPORTS (Visa, MC, USDT, PIX, etc.); \
 empty if none stated.
 - vertical: the high-risk verticals the provider COVERS; use 'unknown' only if \
 the message gives NO vertical signal.
 - company: extract if the provider names their company/brand; null if not stated.
+- position: extract author's title, position or role (e.g. 'CEO', 'Head of BD', 'Sales Manager', 'Account Manager'); null if not stated.
 - BE STRICT. Default is is_provider=false. Set true only when the author is \
 clearly the one OFFERING payment processing, not buying or discussing it.
 - Use [context] block to interpret short messages and detect buyer vs seller voice.
@@ -888,6 +890,7 @@ EXTRACTOR's claim:
   methods: {methods}
   vertical: {vertical}
   company: {company}
+  position: {position}
   evidence_quote: {evidence_quote}
   rationale: {rationale}
 
