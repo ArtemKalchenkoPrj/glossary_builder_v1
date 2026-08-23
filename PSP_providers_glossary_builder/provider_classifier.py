@@ -280,7 +280,7 @@ def _run_provider_judge(
         verdict = str(data.get("verdict", "")).strip().upper()
         reason  = str(data.get("reason", "")).strip()
         if verdict not in ("REAL_PROVIDER", "MISTAKE"):
-            verdict = "REVIEW"
+            verdict = "REAL_PROVIDER"
     except Exception as exc:
         verdict = "REVIEW"
         reason  = f"judge call failed: {exc}"

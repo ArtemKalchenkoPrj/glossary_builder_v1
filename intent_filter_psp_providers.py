@@ -37,6 +37,71 @@ from pathlib import Path
 _MODULE_DIR = Path(__file__).resolve().parent
 DEFAULT_PROVIDER_GLOSSARY_DB = str(_MODULE_DIR / "PSP_provider_glossary_builder" / "data" / "provider_glossary.db")
 
+# стоп слова
+ANTI_SIGNALS: list[str] = [
+    # Дроп SIM схема
+    "sim-направление",
+    "sim направление",
+    "сим направление",
+    "вход sim",
+
+    # Кардинг / фрод
+    "минусовые кредитки",
+    "отработаю логи",
+    "отрабатываю логи",
+    "минусовые карты",
+
+    # FaustEU спам паттерн
+    "не льешь, но хочешь зарабатывать",
+    "не льешь, но хочешь заработать",
+    "реферальная система",  # в поєднанні з payment context
+    "депозит лично под вас",
+    "гарант любой на ваш вкус",
+
+    # Посередники варіанти
+    "подключу к площадке",
+    "подключу без страхового депозита",  # але сам підключає до чужої площадки
+    "подключайтесь к нам по лучшим условиям",
+
+    # Обнал кредиток
+    "balance transfer",
+    "billpay",  # в контексті з "минусовые"
+
+    # Дропперська термінологія
+    "трейдеров",
+    "трейдер",
+    "для трейдер",
+    "набор трейдер",
+    "мануалы",
+    "менторский состав",
+    "куратор",
+    "страховой депозит",
+    "белый треугольник",
+    "белые треугольники",
+    "красный гринекс",
+    "ставим на площадки",
+    "подключайся через официального представителя",
+    "подключу на площадку",
+    "подключение к площадке",
+    "подключу к площадке"
+
+    # Продаж акаунтів
+    "wts/sell",
+    "wts sell",
+    "selling accounts",
+    "ready acc",
+    "kyc service",
+    "costume name",
+
+    # Медіабаєри / трафік
+    "focus on traffic",
+    "facebook storming",
+    "stop wasting time",
+
+    # WL software
+    "white label который выдерживает",
+    "wl которые",
+]
 
 # ── Seller-intent signals ─────────────────────────────────────────────────────
 # Lower-case; matched as substrings so inflected forms are caught.
@@ -267,7 +332,12 @@ def pre_filter(
     if not text:
         return False
     low = text.lower()
-    has_term   = any(t in low for t in load_glossary_terms(db_path))
+
+    # Антислова — миттєво відсікаємо без LLM
+    if any(s in low for s in ANTI_SIGNALS):
+        return False
+
+    has_term = any(t in low for t in load_glossary_terms(db_path))
     has_signal = any(s in low for s in SELLER_SIGNALS)
     return has_term or has_signal
 

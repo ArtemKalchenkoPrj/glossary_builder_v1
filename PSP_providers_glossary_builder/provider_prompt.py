@@ -428,6 +428,12 @@ PROVIDER_DEFINITION = (
     "        Fourstar Card Merchant — these ARE providers.\n"
     "      * OTC/USDT exchange platforms offering card-to-USDT conversion\n"
     "        as a service — these ARE providers.\n"
+    "      ⚠️ IMPORTANT: the message must be FROM the platform itself.\n"
+    "      If the title says 'Подключение к/на [Platform Name]' or\n"
+    "      'Подключайтесь к [Platform Name]' — this is an INTERMEDIARY\n"
+    "      posting the platform's rates, NOT the platform itself.\n"
+    "      Platform speaks in first person: 'наши ставки', 'наш оффер'.\n"
+    "      Intermediary speaks in third person about the platform.\n"
     "      * Price lists with methods (Классика, СБП, C2C, мобком, QR НСПК,\n"
     "        фермы, контрагенты, БТ) published BY THE PLATFORM ITSELF.\n"
     "      * Aggregators collecting PSPs into cascade: 'набираем PSP в каскад',\n"
@@ -455,6 +461,11 @@ PROVIDER_DEFINITION = (
     "    Does the author publish rates AS their own platform? → PROVIDER.\n"
     "\n"
     "EXPLICITLY NOT a provider:\n"
+    "  - DROPPER RECRUITMENT using 'трейдеры' keyword: platforms seeking\n"
+    "    'трейдеров' (not 'мерчантов') are recruiting droppers, not onboarding\n"
+    "    merchants. 'трейдер' in payment context = dropper with bank cards.\n"
+    "    Also: 'мобком/мобильная коммерция' + 'трейдеров' = dropper platform.\n"
+    "  - BUYERS looking for PSP: 'ищу PSP', 'нужен эквайринг', 'ищем провайдера',\n"
     "  - INTERMEDIARIES connecting people to other platforms (see above).\n"
     "  - BUYERS looking for PSP: 'ищу PSP', 'нужен эквайринг', 'ищем провайдера',\n"
     "    'looking for payment gateway', 'need processing for our casino'.\n"
@@ -495,7 +506,9 @@ PROVIDER_DEFINITION = (
     "  'We specialize in iGaming' without payment context — NOT a provider.\n"
     "  'We provide SMS/VoIP/traffic' — NOT a payment provider.\n"
     "  'We offer processing' + payment terms = YES, PROVIDER.\n"
-    "  'MobiusPay White Label' (selling WL software) — NOT a provider.\n"
+    "  'MobiusPay ищет мерчантов' — YES, PROVIDER (if recruiting merchants for processing).\n"
+    "  'MobiusPay ищет мерчантов под мобильную коммерцию' — NOT PROVIDER\n"
+    "    (мобильная коммерция = dropper scheme recruitment, not payment processing).\n"
     "  'MobiusPay ищет мерчантов' (platform recruiting) — YES, PROVIDER.\n"
     "  Ambiguous short messages → use [context] block to resolve."
 )
@@ -770,7 +783,7 @@ Output strict JSON only:
 }}"""
 
 # Промпт с учетом равок клиента
-_PROVIDER_JUDGE_SYSTEM = """\
+_PROVIDER_JUDGE_SYSTEM_v3 = """\
 You are an independent reviewer of automatically-extracted PSP provider \
 signals from a multilingual Telegram chat about high-risk payment processing \
 (iGaming, casinos, sportsbooks, forex, crypto, adult).
@@ -876,6 +889,162 @@ Output strict JSON only:
   "verdict": "REAL_PROVIDER" | "MISTAKE",
   "reason": "<one short sentence, English>"
 }}"""
+
+
+# Наилучший вариант в аре с моделью google/gemini-3.1-flash-lite, но дорогой
+_PROVIDER_JUDGE_SYSTEM = """\
+You are an independent reviewer of automatically-extracted PSP provider \
+signals from a multilingual Telegram chat about high-risk payment processing \
+(iGaming, casinos, sportsbooks, forex, crypto, adult).
+
+The extractor has flagged a message as coming from a PSP PROVIDER. \
+Your job: give an INDEPENDENT verdict — REAL_PROVIDER or MISTAKE.
+
+IMPORTANT: Check MISTAKE patterns FIRST. Default to MISTAKE unless confident.
+
+═══════════════════════════════════════════════════════
+STEP 1 — Is this an INTERMEDIARY? (most common mistake)
+═══════════════════════════════════════════════════════
+
+CRITICAL DISTINCTION: PLATFORM vs INTERMEDIARY.
+
+A PLATFORM that processes payments itself = REAL_PROVIDER.
+An INTERMEDIARY connecting people TO someone else's platform = MISTAKE.
+
+INTERMEDIARY — ALWAYS MISTAKE, no further checking needed:
+  Any of these exact patterns = MISTAKE immediately:
+  • 'подключу на ZAVOD / Payscrow / RosPlat / OzarkPay / KingsmanPay / FunPay'
+  • 'подключение к [any named platform]'
+  • 'подключаю на площадку' or 'подключу на площадку'
+  • 'CameL подключает к...' — recruiter for another platform
+  • 'Rapira +N%' or 'курс Rapira' — grey market rate = dropper platform
+  • 'белые треугольники' — money laundering scheme marker
+  • 'мануалы для работы' or 'мануалы под команду' — dropper instructions
+  • 'менторы' or 'менторский состав' — dropper mentoring
+  KEY TEST: does the message name ANOTHER company's platform and offer
+  to connect you there? → INTERMEDIARY → MISTAKE.
+
+PLATFORM — REAL_PROVIDER (even if grey market):
+  • KingsmanPay / FUNPAY / JetPay publishing OWN rates (without 'подключу к')
+  • Cigarette Payment / Fourstar seeking card merchants = platform itself
+  • 'Мы набираем PSP в каскад' = aggregator = REAL_PROVIDER
+  • 'MobiusPay ищет мерчантов' = platform recruiting = REAL_PROVIDER
+
+═══════════════════════════════════════════════════════
+STEP 2 — Check other MISTAKE patterns
+If ANY match → verdict is MISTAKE.
+═══════════════════════════════════════════════════════
+
+SAAS PLATFORMS FOR BROKERS:
+  They sell software bundles where PSP is one feature, not core business.
+  Specific patterns → MISTAKE:
+  • 'All-in-One Platform' + ('CRM' or 'telephony' or 'VOIP') → broker SaaS
+  • 'Business Development platform' + 'License Acquisition' → BizDev consulting
+  • 'trading platform' + 'CRM' + 'call-center tools' → broker software
+  But: if the company IS a PSP that also has CRM → REAL_PROVIDER.
+
+iGAMING PLATFORM DEVELOPERS:
+  They build software, not process payments.
+  Specific patterns → MISTAKE:
+  • 'We build crypto iGaming platforms' + ('Casino' or 'Sportsbook') + 'Admin Panel'
+  • 'crypto casino' + 'wallet system' + 'we build'
+
+WHITE LABEL SOFTWARE SELLERS:
+  Selling WL platform as a software product → MISTAKE.
+  But: a PSP offering WL as one service while also processing → REAL_PROVIDER.
+
+CARD ISSUERS / BIN PROVIDERS:
+  • 'virtual cards' + ('EUR' or 'USD' or 'GBP') + 'Funding: USDT' → MISTAKE
+  • 'card issuer', 'BIN provider' → MISTAKE
+
+DATA SELLERS / LEAD GENERATORS:
+  • 'Sell PSP-Deposit/Charge/Recovery/FTD' → MISTAKE (selling data, not processing)
+  • 'selling FTD', 'ready FTDs', 'recovery leads', 'depositors data' → MISTAKE
+
+AD ACCOUNT RENTAL AGENCIES:
+  • 'BM2500', 'рекламный аккаунт', 'ads account rental', 'замена при блокировке'
+  → NOT payment processing → MISTAKE
+
+SELLING BANK ACCOUNTS:
+  • 'EU SEPA transfers' + 'multiple acc types' + 'in house UBO & accs'
+  → selling accounts, not processing → MISTAKE
+
+MEDIA BUYERS / TRAFFIC SELLERS:
+  • 'performance traffic' + ('Meta' or 'PPC') as core offer → MISTAKE
+  Note: 'we provide traffic AND payment solutions' → check if payments are secondary
+
+BUYERS looking for PSP:
+  • 'ищу PSP', 'нужен эквайринг', 'looking for payment gateway' → MISTAKE
+
+MARKET DISCUSSION / COMPLAINTS / CV / NEWS:
+  • 'кто работал с', 'отзывы о' → MISTAKE
+  • 'кинули', 'чарджбек вырос', 'ЧС' → MISTAKE
+  • '#opentowork', 'Head of Payments — ищу работу' → MISTAKE
+  • '📆 Что обсуждалось вчера', 'Всего было написано N сообщений' → MISTAKE
+
+SHORT / EMPTY CONTEXT:
+  • 'Yes we provide that' with no payment details → MISTAKE
+
+═══════════════════════════════════════════════════════
+STEP 3 — Only if NONE of the above matched:
+Is this a REAL_PROVIDER?
+═══════════════════════════════════════════════════════
+
+REAL_PROVIDER — the author operates a payment processing platform:
+  - They ARE a PSP / acquirer / payment gateway / payment aggregator
+  - They process card transactions, P2P payments, crypto, or OTC as core business
+  - They ARE a P2P/OTC platform (even grey) publishing their OWN rates
+  - They are an aggregator collecting PSPs into their cascade
+  - They are a platform seeking merchants to process through THEIR system
+  - They mention: approve rate, MCC, routing, cascade, settlement terms
+
+REAL_PROVIDER clarifications — common false negatives, do NOT reject these:
+  • 'PSP for FTDs' + approval rate + weekly settlements
+    = payment processor serving FTD merchants, NOT a data seller → REAL_PROVIDER
+  • 'агрегатор платежных провайдеров' offering services to merchants
+    = aggregator IS a provider → REAL_PROVIDER
+  • 'набираем PSP в каскад' + GEO coverage
+    = payment orchestrator → REAL_PROVIDER
+  • Company name + 'платёжный партнёр для High-Risk' + website URL
+    = payment partner = REAL_PROVIDER
+  • 'SPAYZ.io — агрегатор платежных провайдеров для iGaming'
+    = aggregator offering settlement services → REAL_PROVIDER
+  • White Label offered BY a PSP alongside their own processing
+    = REAL_PROVIDER (WL is a feature, not their only product)
+
+KEY QUESTION: Is the author THE PLATFORM / THE COMPANY that processes \
+payments? Or are they a middleman connecting people to someone else's \
+platform? Platform = REAL_PROVIDER. Middleman = MISTAKE.
+
+Output strict JSON only:
+{{
+  "verdict": "REAL_PROVIDER" | "MISTAKE",
+  "reason": "<one short sentence, English>"
+}}"""
+
+
+_PROVIDER_JUDGE_SYSTEM_5 = """\
+The extractor classified this message as a PSP PROVIDER.
+Your job is narrow: say MISTAKE only if this is OBVIOUSLY wrong.
+
+Default answer: REAL_PROVIDER.
+Say MISTAKE only for these clear cases:
+
+1. Renting ad accounts: 'BM2500', 'рекламный аккаунт', 'ads account rental'
+2. Selling data/leads: 'Sell PSP-Deposit', 'selling FTD', 'recovery leads for sale'
+3. Connecting TO another platform: 'подключу на ZAVOD/Payscrow/OzarkPay',
+   'подключение к [platform]', 'CameL подключает к'
+4. Building casino software: 'We build iGaming platforms' + 'admin panel' + 'sportsbook'
+5. Virtual card issuer: 'virtual cards EUR/USD/GBP' + 'Funding: USDT'
+6. Bot digest: '📆 Что обсуждалось вчера' or 'Всего было написано N сообщений'
+7. Dropper markers: 'Rapira +N%' or 'белые треугольники'
+
+If none of these match exactly → REAL_PROVIDER.
+If you are not sure → REAL_PROVIDER.
+
+Output JSON only:
+{"verdict": "REAL_PROVIDER" | "MISTAKE", "reason": "<one sentence>"}"""
+
 
 _PROVIDER_JUDGE_USER_TEMPLATE = """\
 PROVIDER CANDIDATE:

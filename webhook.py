@@ -420,6 +420,33 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
 
     try:
         async with _state.pool.acquire() as conn:
+
+            # ── Cross-user text dedup ─────────────────────────────────────────
+            text = (result.get("text") or "").strip()
+            if len(text) > 100:
+                import hashlib
+                text_hash = hashlib.md5(text.lower().encode()).hexdigest()
+                existing = await conn.fetchrow(
+                    f"""
+                    SELECT id FROM {_TABLE_PREFIX}classified_messages_dirty
+                    WHERE lead_type = 'psp_provider'
+                    AND md5(lower(trim(text))) = $1
+                    LIMIT 1
+                    """,
+                    text_hash,
+                )
+                if existing:
+                    logger.info(
+                        "[provider] cross-user duplicate message_id=%s existing_id=%s",
+                        result.get("message_id"), existing["id"],
+                    )
+                    # Записуємо як MISTAKE з поясненням
+                    result["verdict"] = "MISTAKE"
+                    result["judge_reason"] = f"[multiacc duplicate of id={existing['id']}]"
+                    result["rationale"] = f"[multiacc duplicate of id={existing['id']}]"
+                    result["db_id"] = existing["id"]
+
+            # ── Persist ───────────────────────────────────────────────────────
             geo_list = _to_list(result.get("geo"))
             methods_list = _to_list(result.get("methods"))
 
@@ -432,30 +459,30 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
 
             row = await conn.fetchrow(
                 _UPSERT_SQL,
-                group_id,  # $1
-                result.get("message_id"),  # $2
-                _parse_dt(result.get("timestamp")),  # $3
-                result.get("username"),  # $4
-                result.get("text"),  # $5
-                True,  # $6  is_lead
-                result.get("confidence"),  # $7
-                "psp_provider",  # $8  lead_type
-                None,  # $9  intent
-                None,  # $10 interest_level
-                _jsonb(_to_list(result.get("vertical"))),  # $11
-                _jsonb(geo_processed or geo_list),  # $12
-                _jsonb(methods_list),  # $13
-                result.get("evidence_quote"),  # $14
-                result.get("rationale"),  # $15
-                _jsonb(_to_list(result.get("glossary_terms_seen"))),  # $16
-                result.get("elapsed_ms"),  # $17
-                result.get("verdict"),  # $18
-                result.get("judge_reason"),  # $19
-                result.get("company"),  # $20 company
-                result.get("position"),  # $21 position
-                "provider",  # $22 pipeline
-                "ok",  # $23 db_write_status
-                None,  # $24 db_write_error
+                group_id,
+                result.get("message_id"),
+                _parse_dt(result.get("timestamp")),
+                result.get("username"),
+                result.get("text"),
+                True,
+                result.get("confidence"),
+                "psp_provider",
+                None,
+                None,
+                _jsonb(_to_list(result.get("vertical"))),
+                _jsonb(geo_processed or geo_list),
+                _jsonb(methods_list),
+                result.get("evidence_quote"),
+                result.get("rationale"),
+                _jsonb(_to_list(result.get("glossary_terms_seen"))),
+                result.get("elapsed_ms"),
+                result.get("verdict"),
+                result.get("judge_reason"),
+                result.get("company"),
+                result.get("position"),
+                "provider",
+                "ok",
+                None,
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -761,4 +788,58 @@ async def health() -> dict:
         "glossary_entries": len(_state.glossary),
         "provider_glossary_entries": len(_state.provider_glossary),
         "db": db_status,
+    }
+
+@app.get("/debug")
+async def debug() -> dict:
+    """Debug endpoint — shows current config and prompt previews."""
+    import sys
+    from PSP_providers_glossary_builder.provider_prompt import (
+        _PROVIDER_STAGE1_SYSTEM,
+        _PROVIDER_JUDGE_SYSTEM,
+        PROVIDER_DEFINITION,
+    )
+    import PSP_providers_glossary_builder.provider_classifier as pc
+    import PSP_providers_glossary_builder.provider_prompt as pp
+
+    src = open(pc.__file__).read()
+
+    return {
+        "models": {
+            "buyer_llm":      _state.llm.model,
+            "provider_llm":   _state.provider_llm.model,
+            "stage1_model":   os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider_llm)"),
+            "judge_model":    os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider_llm)"),
+            "glossary_model": os.environ.get("GLOSSARY_MODEL", "(not set)"),
+        },
+        "config": {
+            "pre_filter_enabled": _state.provider_cfg.pre_filter_enabled,
+            "pre_filter_db_path": _state.provider_cfg.pre_filter_db_path,
+            "stage1_enabled":     _state.provider_cfg.stage1_enabled,
+            "judge_enabled":      _state.provider_cfg.judge_enabled,
+            "db_prefix":          _TABLE_PREFIX or "(none)",
+            "constraint":         f"{_TABLE_PREFIX}uq_group_message_leadtype",
+        },
+        "glossary": {
+            "buyer_entries":    len(_state.glossary),
+            "provider_entries": len(_state.provider_glossary),
+        },
+        "prompt_files": {
+            "provider_prompt_file":     pp.__file__,
+            "provider_classifier_file": pc.__file__,
+        },
+        "prompt_previews": {
+            "stage1_first_300":     _PROVIDER_STAGE1_SYSTEM[:300].replace("\n", " "),
+            "judge_first_300":      _PROVIDER_JUDGE_SYSTEM[:300].replace("\n", " "),
+            "definition_first_300": PROVIDER_DEFINITION[:300].replace("\n", " "),
+        },
+        "code_checks": {
+            "PROVIDER_JUDGE_MODEL_in_code": "PROVIDER_JUDGE_MODEL" in src,
+            "_run_provider_judge_in_code":  "_run_provider_judge" in src,
+            "judge_enabled_in_code":        "judge_enabled" in src,
+        },
+        "loaded_modules": sorted([
+            k for k in sys.modules
+            if "provider" in k.lower() or "psp" in k.lower()
+        ]),
     }
