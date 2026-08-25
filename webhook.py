@@ -274,13 +274,47 @@ async def lifespan(app: FastAPI):
     await _state.pool.close()
 
 
+import secrets
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+
+security = HTTPBasic()
+
+DOCS_LOGIN = os.getenv("DOCS_LOGIN")
+DOCS_PASSWORD = os.getenv("DOCS_PASSWORD")
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    ok_user = secrets.compare_digest(credentials.username, DOCS_LOGIN)
+    ok_pass = secrets.compare_digest(credentials.password, DOCS_PASSWORD)
+    if not (ok_user and ok_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
 app = FastAPI(
     title="Lead Classifier",
     description="Parallel buyer + provider classification via glossary pipelines.",
     version="2.0.0",
     lifespan=lifespan,
+    docs_url=None,  # Отключает /docs (Swagger UI)
+    redoc_url=None,  # Отключает /redoc
+    openapi_url=None,  # Отключает /openapi.json (схему API)
 )
 
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+
+@app.get("/docs", include_in_schema=False)
+async def custom_docs(credentials: HTTPBasicCredentials = Depends(security)):
+    require_auth(credentials)
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="API Docs")
+
+@app.get("/openapi.json", include_in_schema=False)
+async def custom_openapi(credentials: HTTPBasicCredentials = Depends(security)):
+    require_auth(credentials)
+    return get_openapi(title="Lead Classifier", version="2.0.0", routes=app.routes)
 
 # ---------------------------------------------------------------------------
 # Request / response schemas
