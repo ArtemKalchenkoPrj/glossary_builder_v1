@@ -89,7 +89,7 @@ _GLOSSARY_PATH = _PROJECT_ROOT / "data/output/crypto_glossary/glossary_primary_s
 
 # Table prefix — mirror the pattern used in the rest of the webhook.
 from dotenv import load_dotenv
-load_dotenv(_PROJECT_ROOT.parent / ".env")
+load_dotenv(_PROJECT_ROOT / ".env")
 
 # CRITICAL: TABLE_PREFIX must be set to prevent writes to production tables.
 # Fail loudly at import time so misconfiguration is caught immediately.

@@ -55,3 +55,17 @@ wheels/
 /eval_provider.ipynb
 /PSP_providers_improvement.ipynb
 /summary_pipeline.ipynb
+
+__pycache__/
+*.pyc
+*.pyo
+*.env
+venv/
+env/
+.venv/
+*.log
+.DS_Store
+*.sqlite3
+*.db
+uv.lock
+EOF

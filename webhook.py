@@ -36,6 +36,10 @@ import asyncpg
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 
 from Casino_platforms_classifier.casino_classifier import run_casino_classifier
 from glossary_builder_crypto_buyers.crypto_buyer_classifier import classify_crypto_buyer_single_message
@@ -274,6 +278,10 @@ async def lifespan(app: FastAPI):
     await _state.pool.close()
 
 
+security = HTTPBasic()
+DOCS_USER = os.environ.get("DOCS_USER", "admin")
+DOCS_PASS = os.environ.get("DOCS_PASS", "changeme")
+
 import secrets
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -298,9 +306,9 @@ app = FastAPI(
     description="Parallel buyer + provider classification via glossary pipelines.",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url=None,  # Отключает /docs (Swagger UI)
-    redoc_url=None,  # Отключает /redoc
-    openapi_url=None,  # Отключает /openapi.json (схему API)
+    docs_url=None,       # Отключает /docs (Swagger UI)
+    redoc_url=None,      # Отключает /redoc
+    openapi_url=None,    # Отключает /openapi.json (схему API)
 )
 
 from fastapi.openapi.docs import get_swagger_ui_html

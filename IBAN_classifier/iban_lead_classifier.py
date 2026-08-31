@@ -475,7 +475,7 @@ async def _persist_iban_lead(
             timestamp,
             "seeking_iban",                                         # lead_type
             json.dumps(vertical, ensure_ascii=False),              # vertical
-            json.dumps(geo, ensure_ascii=False),
+            json.dumps(geo, ensure_ascii=False),                  
             json.dumps(currencies, ensure_ascii=False),            # payment_methods_mentioned (currencies here)
             'huyochok',                                                   # approved_by — set later by reviewer
             extracted.get("company"),

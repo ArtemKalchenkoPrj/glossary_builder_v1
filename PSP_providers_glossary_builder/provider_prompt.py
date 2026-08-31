@@ -532,8 +532,7 @@ Return strict JSON with this exact shape:
   "confidence": <float 0..1>,
   "geo": ["<country code or short name>", ...],
   "methods": ["<payment method name>", ...],
-  "vertical": ["igaming" | "casino" | "sportsbook" | "forex" | "crypto" | \
-"adult" | "nutra" | "dating" | "other" | "unknown", ...],
+  "vertical": ["igaming" | "casino" | "sportsbook" | "forex" | "crypto" | "adult" | "nutra" | "dating" | "trading" | "mlm" | "subscription" | "call_centers" | "resale" | "other" | "unknown", ...],
   "company": "<company or brand name, or null>",
   "position": "<author's job title / role, or null>",
   "evidence_quote": "<short verbatim quote from the target message, <=160 chars>",

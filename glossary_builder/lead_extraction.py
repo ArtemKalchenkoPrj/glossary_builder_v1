@@ -155,11 +155,7 @@ class LeadExtractionConfig:
         "        the speaker is a buyer looking to integrate). Multi-geo\n"
         "        listings count.\n"
         "  (b) CONCRETE NEED specification — at least one of:\n"
-        "      a specific vertical (iGaming/casino/forex/crypto/adult/nutra/\n"
-        "      dating/trading/MLM/subscription/call centers (often abbreviated\n"
-        "      as 'CC', 'кц', 'колл-центр', 'трафик кц'. CRITICAL: if 'кц' or\n"
-        "      'call center' is mentioned alongside metrics like 'деп' or 'объем',\n"
-        "      the vertical is strictly 'call centers', NOT 'casino')/etc.),\n"
+        "      a specific vertical (iGaming/casino/forex/crypto/adult/etc.),\n"
         "      a specific geography (country/region),\n"
         "      a specific payment method (Blik/iDeal/USDT/etc.),\n"
         "      a volume / FTD / STD / approve-rate requirement,\n"
@@ -329,7 +325,7 @@ For each decision, return strict JSON with this shape:
   "lead_type": "seeking_psp" | "seeking_method" | "seeking_acquiring" | "seeking_other" | null,
   "intent": "buying" | "comparing" | "researching" | "complaining" | "other",
   "interest_level": "high" | "medium" | "low",
-  "vertical": ["igaming" | "casino" | "sportsbook" | "forex" | "crypto" | "adult" | "nutra" | "dating" | "trading" | "mlm" | "subscription" | "call_centers" | "other" | "unknown", ...],
+  "vertical": ["igaming" | "casino" | "sportsbook" | "forex" | "crypto" | "adult" | "nutra" | "dating" | "trading" | "mlm" | "subscription" | "call_centers" | "resale" | "other" | "unknown", ...],
   "geo": ["<country code or short name>", ...],
   "payment_methods_mentioned": ["<method name>", ...],
   "evidence_quote": "<short verbatim quote from the target message, <=160 chars>",
