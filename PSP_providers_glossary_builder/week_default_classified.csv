@@ -1,0 +1,71 @@
+﻿id,source_lead_id,payment_methods_mentioned,company,position,total_messages
+1232,840320,"[""PayIn"", ""PayOut""]","","","[""будь-яке""]"
+1233,851103,[],processermp,support,"[""100+ країн""]"
+1237,859970,"[""PSP""]","","",[]
+1239,861475,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1235,857827,[],"","",[]
+1240,861476,"[""UPI"", ""NEFT"", ""IMPS"", ""RTGS"", ""INR/USDT settlements"", ""cards""]",BULLPAY / RynixSoft,"","[""India""]"
+1243,864280,"[""Card"", ""Crypto"", ""APMs"", ""UPI"", ""IBAN""]","","","[""Worldwide"", ""UK"", ""Cyprus"", ""UAE""]"
+1245,867005,[],Velora,Business Growth Strategist,"[""LATAM"", ""Tier 1""]"
+1236,857905,"[""PSP"", ""bank connections""]",Leoncrm,"",[]
+1247,869954,"[""Внутрибанк"", ""Мобильная коммерция"", ""Межбанк"", ""Контрагенты""]",СameL,"","[""Росія""]"
+1249,872407,"[""СБП"", ""карты"", ""Альфа-банк"", ""ПСБ""]",TradeMo,"","[""Россия""]"
+1079,465404,"[""PSP""]","","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1080,466287,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1087,467610,[],KongerSolutions,"","[""DE"", ""FR"", ""AU"", ""IE"", ""BE"", ""CH"", ""NL"", ""IT"", ""FI""]"
+1088,467616,"[""Card"", ""Crypto"", ""APMs"", ""UPI"", ""European IBANs""]","","","[""worldwide"", ""UK"", ""Cyprus"", ""UAE""]"
+1089,467687,"[""UPI"", ""IMPS"", ""NEFT"", ""Bank Transfer"", ""QR Payments""]",YHPAY PAYMENT,"","[""India"", ""Pakistan"", ""Bangladesh""]"
+1090,467714,[null],"","","[""AU"", ""NZ"", ""EU""]"
+1094,468049,"[""IBAN"", ""vIBAN""]","","","[""USA"", ""EU"", ""DE"", ""GB"", ""LU"", ""LT"", ""FR""]"
+1095,468185,"[""Semi intent"", ""P2P"", ""H2H""]",TRPay,"","[""India""]"
+1098,468782,[],"","",[]
+1102,469555,"[""SPEI"", ""CODI""]","","","[""Vietnam"", ""Indonesia"", ""Philippines"", ""Pakistan"", ""Brazil"", ""Colombia"", ""Peru"", ""Mexico""]"
+1103,469657,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1110,473921,"[""PSP""]","","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1111,473974,"[""UPI Intent"", ""H2H""]",Silkpay,"","[""India""]"
+1115,474830,"[""SEPA"", ""SWIFT"", ""Local cards"", ""USD settlement"", ""PIX""]",Kunga,"","[""EEUU"", ""EU"", ""UK"", ""Mexico"", ""Colombia"", ""Brazil"", ""Argentina""]"
+1117,475559,"[""PSP"", ""bank connections""]","","",[]
+1119,476642,"[""Open Banking"", ""H2h"", ""RTGS"", ""PSP platform services""]","","","[""UK"", ""EU"", ""GCC"", ""India""]"
+1120,476821,[],"","","[""India""]"
+1121,478971,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1122,479651,[],"","","[""AU"", ""NZ"", ""EU""]"
+1176,498518,"[""SEPA"", ""SWIFT"", ""PIX"", ""Cards""]",Kunga,"","[""EEUU"", ""EU"", ""UK"", ""MX"", ""CO"", ""BRA"", ""AR""]"
+1124,481825,"[""PSP"", ""bank connections""]","","",[]
+1128,482369,"[""PSP""]","","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1130,484471,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1131,484550,"[""Bikash"", ""Nagad"", ""UPI"", ""IMPS"", ""NEFT"", ""Native Bank Accounts""]","WinyPay, YHPAY PAYMENT","","[""Bangladesh"", ""India""]"
+1133,484758,"[""UPI Intent"", ""H2H""]",Silkpay,"","[""India""]"
+1139,485965,[],"","","[""AU"", ""NZ"", ""EU""]"
+1140,486080,"[""Open Banking"", ""IBAN""]",Noda / KipMotion,Head of B2B Sales / CEO,"[""Europe""]"
+1141,486353,"[""P2P"", ""P2C"", ""Card"", ""Deeplink"", ""UPI"", ""QR"", ""Easypaisa"", ""JazzCash"", ""Raast QR"", ""Humo"", ""Uzcard"", ""Payme"", ""Click"", ""Uzum"", ""bKash"", ""Nagad"", ""PIX"", ""CVU/CBU"", ""USDT""]",24PayBase,"","[""Украина"", ""Индия"", ""Пакистан"", ""Азербайджан"", ""Узбекистан"", ""Бангладеш"", ""Бразилия"", ""Аргентина""]"
+1143,486612,"[""PSP-Deposit"", ""Charge"", ""Recovery"", ""EX-Deposit"", ""Ret"", ""Ftd""]","","","[""CA"", ""EUROPE"", ""US"", ""AU"", ""LATAM"", ""RU""]"
+1152,488436,"[""Routing and cascading payment platform""]","","","[""UK"", ""EU""]"
+1154,491355,"[""PSP"", ""bank connections""]","","",[]
+1155,491425,[],"","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1156,491447,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1160,493455,"[""PSP""]","","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1181,499346,"[""Routing and cascading payment platform""]",Oct_Law,"","[""UK"", ""EU""]"
+1161,493594,"[""Forex"", ""Crypto"", ""CFD""]","","",[]
+1180,499275,"[""UPI"", ""IMPS"", ""NEFT"", ""RTGS"", ""USDT (TRC20)""]","","","[""India""]"
+1182,500203,"[""PSP""]","","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1184,501927,"[""PSP Depositors"", ""Chargeback/Recovery""]","","","[""Canada"", ""Australia"", ""UK"", ""France"", ""Belgium"", ""Luxembourg"", ""Austria"", ""Germany"", ""Switzerland"", ""Netherlands"", ""Italy"", ""Spain"", ""Portugal"", ""Global""]"
+1185,503862,[],"","",[]
+1186,504043,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1188,504888,"[""UPI"", ""IMPS"", ""NEFT"", ""RTGS"", ""USDT""]","","","[""India""]"
+1166,496444,"[""INR (Pay-In/Pay-Out)"", ""PKR (EasyPaisa, JazzCash)"", ""USDT""]",BULLPAY,"","[""India"", ""Pakistan""]"
+1167,496752,"[""INR"", ""PKR"", ""USDT"", ""crypto""]",BULLPAY,"","[""India"", ""Pakistan""]"
+1169,496916,"[""P2P"", ""P2C"", ""H2H"", ""UPI""]","","","[""India""]"
+1171,497650,"[""PSP"", ""bank connections""]","","",[]
+1172,497750,"[""payments""]",OnRamp,"","[""EU"", ""UK"", ""AU""]"
+1173,497759,"[""PSP""]","","","[""Norway"", ""Germany"", ""UK"", ""NL""]"
+1175,498369,[],"","","[""AU"", ""NZ"", ""EU""]"
+1191,505161,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1193,505460,[],Tunzer,Head of Partnerships & Onboarding,[]
+1194,505796,[null],"","","[""AU"", ""NZ"", ""EU""]"
+1202,528418,"[""P2P-процесинг""]",GORDPAY,bizdev,"[""Україна""]"
+1208,537050,[],MobiusPay,BizDev,[]
+1211,637651,[],PayLee,"","[""СНГ"", ""World""]"
+1225,768885,"[""мобильная коммерция""]",RosPlat,TeamLead,[]
+1226,796879,"[""P2P"", ""P2C"", ""H2H"", ""UPI Intent""]","","","[""India""]"
+1228,797544,"[""карты""]",MelBet,"","[""РФ"", ""Азербайджан"", ""Киргизия"", ""Таджикистан"", ""Казахстан"", ""Канада"", ""Молдова"", ""Албания""]"
+1229,826570,"[""P2P"", ""эквайринг"", ""крипто""]",MASTERPAY,"",[]
