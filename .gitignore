@@ -69,3 +69,5 @@ env/
 *.db
 uv.lock
 EOF
+PSP_providers_glossary_builder/data/provider_glossary.db
+PSP_providers_glossary_builder/data/rag/chroma/chroma.sqlite3
