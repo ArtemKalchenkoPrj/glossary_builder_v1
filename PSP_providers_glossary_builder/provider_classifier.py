@@ -81,6 +81,7 @@ def make_provider_llm_client() -> LLMClient:
         api_key   = api_key,
         base_url  = "https://openrouter.ai/api/v1",
         model     = os.environ.get("PSP_PROVIDERS_MODEL", "openai/gpt-4.1-nano"),
+       # temperature = 0
     ))
 
 # ── Glossary loader ───────────────────────────────────────────────────────────
