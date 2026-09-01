@@ -31,6 +31,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from scam_detector import check_scam
 
 import asyncpg
 from dotenv import load_dotenv
@@ -285,6 +286,8 @@ DOCS_PASS = os.environ.get("DOCS_PASS", "changeme")
 import secrets
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 
 security = HTTPBasic()
 
@@ -306,23 +309,21 @@ app = FastAPI(
     description="Parallel buyer + provider classification via glossary pipelines.",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url=None,       # Отключает /docs (Swagger UI)
-    redoc_url=None,      # Отключает /redoc
-    openapi_url=None,    # Отключает /openapi.json (схему API)
+    #docs_url=None,       # Отключает /docs (Swagger UI)
+    #redoc_url=None,      # Отключает /redoc
+    #openapi_url=None,    # Отключает /openapi.json (схему API)
 )
 
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.openapi.utils import get_openapi
 
-@app.get("/docs", include_in_schema=False)
-async def custom_docs(credentials: HTTPBasicCredentials = Depends(security)):
-    require_auth(credentials)
-    return get_swagger_ui_html(openapi_url="/openapi.json", title="API Docs")
+#@app.get("/docs", include_in_schema=False)
+#async def custom_docs(credentials: HTTPBasicCredentials = Depends(security)):
+#    require_auth(credentials)
+#    return get_swagger_ui_html(openapi_url="/openapi.json", title="API Docs")
 
-@app.get("/openapi.json", include_in_schema=False)
-async def custom_openapi(credentials: HTTPBasicCredentials = Depends(security)):
-    require_auth(credentials)
-    return get_openapi(title="Lead Classifier", version="2.0.0", routes=app.routes)
+#@app.get("/openapi.json", include_in_schema=False)
+#async def custom_openapi(credentials: HTTPBasicCredentials = Depends(security)):
+#    require_auth(credentials)
+#    return get_openapi(title="Lead Classifier", version="2.0.0", routes=app.routes)
 
 # ---------------------------------------------------------------------------
 # Request / response schemas
@@ -594,6 +595,17 @@ async def classify(body: ClassifyRequest) -> dict:
                         None,  # $24 db_write_error
                     )
                     return
+
+            if await check_scam(
+                    text=body.text,
+                    group_id=body.group_id,
+                    message_id=body.message_id,
+                    timestamp=body.timestamp,
+                    username=body.username,
+                    conn_pool=_state.pool,
+            ):
+                logger.info("[classify] scam detected, pipeline stopped message_id=%s", body.message_id)
+                return
 
             logger.info(
                 "[classify] dedup=ok → starting sequential pipelines message_id=%s",
