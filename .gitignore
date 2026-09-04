@@ -71,3 +71,4 @@ uv.lock
 EOF
 PSP_providers_glossary_builder/data/provider_glossary.db
 PSP_providers_glossary_builder/data/rag/chroma/chroma.sqlite3
+ignored_usernames.txt

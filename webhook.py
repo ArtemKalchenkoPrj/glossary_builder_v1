@@ -141,6 +141,7 @@ class _AppState:
 
     # Shared
     pool: asyncpg.Pool
+    ignored_usernames: frozenset[str] = frozenset()
 
 _state = _AppState()
 
@@ -266,6 +267,17 @@ async def lifespan(app: FastAPI):
     # ── PostgreSQL connection pool ────────────────────────────────────────
     dsn = os.environ["POSTGRES_DSN"]
     _state.pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+
+    _ignored_path = project_root / "ignored_usernames.txt"
+    if _ignored_path.exists():
+        lines = _ignored_path.read_text(encoding="utf-8").splitlines()
+        _state.ignored_usernames = frozenset(
+            line.strip() for line in lines
+            if line.strip() and not line.strip().startswith("#")
+        )
+        logger.info("[startup] ignored_usernames: %d loaded", len(_state.ignored_usernames))
+    else:
+        logger.info("[startup] ignored_usernames: file not found, skipping")
 
     logger.info(
         "Startup complete — buyer glossary: %d, provider glossary: %d",
@@ -595,6 +607,10 @@ async def classify(body: ClassifyRequest) -> dict:
                         None,  # $24 db_write_error
                     )
                     return
+
+            if body.username and body.username in _state.ignored_usernames:
+                logger.info("[classify] ignored username=%r message_id=%s", body.username, body.message_id)
+                return
 
             if await check_scam(
                     text=body.text,
