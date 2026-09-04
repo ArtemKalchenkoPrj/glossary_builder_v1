@@ -497,6 +497,7 @@ def classify_provider_message(
     username:   Optional[str]      = None,
     timestamp:  Optional[datetime] = None,
     context:    Optional[list[Message]] = None,
+    extractor: ProviderExtractor | None = None,
 ) -> dict:
     """Classify one message through the PSP provider pipeline.
 
@@ -527,7 +528,7 @@ def classify_provider_message(
         last_name  = None,
     )
 
-    extractor = ProviderExtractor(glossary, llm, cfg, rag_index=rag_index)
+    extractor = extractor or ProviderExtractor(glossary, llm, cfg, rag_index)
 
     decision: Optional[ProviderDecision] = extractor.extract_one(
         message,

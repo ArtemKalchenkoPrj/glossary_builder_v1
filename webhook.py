@@ -59,7 +59,7 @@ from Deduper.deduplication import is_duplicate
 from PSP_providers_glossary_builder.provider_classifier import (
     classify_provider_message,
     load_provider_glossary,
-    make_provider_llm_client,
+    make_provider_llm_client, ProviderExtractor,
 )
 from PSP_providers_glossary_builder.provider_decision import ProviderExtractionConfig
 
@@ -138,6 +138,7 @@ class _AppState:
     provider_glossary: list[dict]
     provider_llm: LLMClient
     provider_cfg: ProviderExtractionConfig
+    provider_extractor: ProviderExtractor
 
     # Shared
     pool: asyncpg.Pool
@@ -256,6 +257,12 @@ async def lifespan(app: FastAPI):
 
     _state.provider_cfg = ProviderExtractionConfig(
         pre_filter_db_path=provider_db_path,
+    )
+
+    _state.provider_extractor = ProviderExtractor(
+        glossary=_state.provider_glossary,
+        llm=_state.provider_llm,
+        cfg=_state.provider_cfg,
     )
     logger.info(
         "[startup] provider pipeline ready: pre_filter=%s stage1=%s judge=%s",
@@ -755,6 +762,7 @@ async def classify(body: ClassifyRequest) -> dict:
                     username=body.username,
                     timestamp=body.timestamp,
                     context=context,
+                    extractor=_state.provider_extractor,
                 )
             except Exception as exc:
                 logger.error(
