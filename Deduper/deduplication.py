@@ -100,7 +100,7 @@ async def is_duplicate(
     if not text_norm:
         return False
 
-    now = _aware(timestamp) if timestamp is not None else datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     new_hash = _hash(text)
 
     async with conn.transaction():
