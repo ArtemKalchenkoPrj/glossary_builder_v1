@@ -85,3 +85,11 @@ ignored_usernames.txt
 /PSP_providers_glossary_builder/data/output/old_result.xlsx
 /PSP_providers_glossary_builder/data/input/test_df.csv
 /PSP_providers_glossary_builder/data/output/test_df.xlsx
+/Traffic_glossary_builder/eval_traffic.ipynb
+/Traffic_glossary_builder/data/leads_df.csv
+/Traffic_glossary_builder/data/leads_df.xlsx
+/Traffic_glossary_builder/data/messages_export.csv
+/Traffic_glossary_builder/data/not_leads_df.csv
+/Traffic_glossary_builder/data/test_df.csv
+/Traffic_glossary_builder/traffic_classifier_plan.md
+/Traffic_glossary_builder/data/very_not_leads_df.csv
