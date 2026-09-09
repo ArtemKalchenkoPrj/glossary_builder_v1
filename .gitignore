@@ -72,3 +72,16 @@ EOF
 PSP_providers_glossary_builder/data/provider_glossary.db
 PSP_providers_glossary_builder/data/rag/chroma/chroma.sqlite3
 ignored_usernames.txt
+/PSP_providers_glossary_builder/data/input/17-18.08.csv
+/PSP_providers_glossary_builder/data/input/21-23.csv
+/PSP_providers_glossary_builder/data/input/23-26.csv
+/compare_results.py
+/PSP_providers_glossary_builder/data/output/comparison.xlsx
+/Crypto_sellers_classifier/crypto_seller_classifier.py
+/eval_results.xlsx
+/PSP_providers_glossary_builder/data/output/providers_production_v4.xlsx
+/PSP_providers_glossary_builder/data/output/providers_production_v3.xlsx
+/PSP_providers_glossary_builder/data/output/old_result.csv
+/PSP_providers_glossary_builder/data/output/old_result.xlsx
+/PSP_providers_glossary_builder/data/input/test_df.csv
+/PSP_providers_glossary_builder/data/output/test_df.xlsx

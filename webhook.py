@@ -1,8 +1,9 @@
 """FastAPI webhook for single-message lead classification.
 
-Two parallel pipelines:
-    1. Buyer pipeline  — classify_single_message → cascade (crypto, casino, iban)
+Three parallel pipelines:
+    1. Buyer pipeline    — classify_single_message → cascade (crypto, casino, iban)
     2. Provider pipeline — classify_provider_message (glossary-based)
+    3. Traffic pipeline  — classify_traffic_message (affiliate traffic buyers/sellers)
 
 Exposes two endpoints:
     POST /classify  — classify a message and persist the result to PostgreSQL
@@ -14,11 +15,16 @@ Run locally:
 Required .env variables:
     POSTGRES_DSN=postgresql://user:password@host:5432/dbname
     PSP_PROVIDERS_OPENROUTER_API_KEY=sk-or-...  (for provider pipeline)
+    TRAFFIC_OPENROUTER_API_KEY=sk-or-...        (for traffic pipeline)
     PROVIDER_STAGE1_MODEL=openai/gpt-4.1-mini   (optional)
     PROVIDER_JUDGE_MODEL=openai/gpt-4.1-mini    (optional)
+    TRAFFIC_STAGE1_MODEL=openai/gpt-4.1-mini    (optional)
+    TRAFFIC_JUDGE_MODEL=openai/gpt-4.1-mini     (optional)
 
 Migration (run once):
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS company TEXT DEFAULT NULL;
+    ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS traffic_source JSONB DEFAULT NULL;
+    ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS pricing_model   JSONB DEFAULT NULL;
 """
 
 from __future__ import annotations
@@ -62,6 +68,14 @@ from PSP_providers_glossary_builder.provider_classifier import (
     make_provider_llm_client, ProviderExtractor,
 )
 from PSP_providers_glossary_builder.provider_decision import ProviderExtractionConfig
+
+# Traffic pipeline imports
+from Traffic_glossary_builder.traffic_classifier import (
+    classify_traffic_message,
+    load_traffic_glossary,
+    make_traffic_llm_client,
+)
+from Traffic_glossary_builder.traffic_decision import TrafficExtractionConfig
 
 _TABLE_PREFIX = os.getenv('TABLE_PREFIX') or ""
 logger = logging.getLogger(__name__)
@@ -140,6 +154,11 @@ class _AppState:
     provider_cfg: ProviderExtractionConfig
     provider_extractor: ProviderExtractor
 
+    # Traffic pipeline
+    traffic_glossary: list[dict]
+    traffic_llm: object
+    traffic_cfg: TrafficExtractionConfig
+
     # Shared
     pool: asyncpg.Pool
     ignored_usernames: frozenset[str] = frozenset()
@@ -193,6 +212,22 @@ def _log_startup_config() -> None:
     logger.info("  Pre-filter DB  : %s", _state.provider_cfg.pre_filter_db_path)
     logger.info("  Stage1         : %s", _state.provider_cfg.stage1_enabled)
     logger.info("  Judge          : %s", _state.provider_cfg.judge_enabled)
+
+    # ── Traffic pipeline ──────────────────────────────────────────────────
+    logger.info(sep)
+    logger.info("  TRAFFIC PIPELINE")
+    logger.info(
+        "  Stage1 model   : %s",
+        os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic LLM)"),
+    )
+    logger.info(
+        "  Judge model    : %s",
+        os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic LLM)"),
+    )
+    logger.info("  Glossary       : %d entries", len(_state.traffic_glossary))
+    logger.info("  Pre-filter     : %s", _state.traffic_cfg.pre_filter_enabled)
+    logger.info("  Stage1         : %s", _state.traffic_cfg.stage1_enabled)
+    logger.info("  Judge          : %s", _state.traffic_cfg.judge_enabled)
 
     # ── Prompt previews ───────────────────────────────────────────────────
     logger.info(sep)
@@ -289,6 +324,30 @@ async def lifespan(app: FastAPI):
     logger.info(
         "Startup complete — buyer glossary: %d, provider glossary: %d",
         len(_state.glossary), len(_state.provider_glossary),
+    )
+
+    # ── Traffic pipeline resources ────────────────────────────────────────
+    traffic_db_path = str(
+        project_root / "Traffic_glossary_builder/data/traffic_glossary.db"
+    )
+    _state.traffic_glossary = load_traffic_glossary(traffic_db_path)
+    logger.info(
+        "[startup] traffic glossary loaded: %d terms from %s",
+        len(_state.traffic_glossary), traffic_db_path,
+    )
+
+    _state.traffic_llm = make_traffic_llm_client()
+    logger.info("[startup] traffic LLM: ready (TRAFFIC_OPENROUTER_API_KEY)")
+
+    _state.traffic_cfg = TrafficExtractionConfig(
+        pre_filter_db_path=traffic_db_path,
+        pre_filter_enabled=bool(_state.traffic_glossary),
+    )
+    logger.info(
+        "[startup] traffic pipeline ready: pre_filter=%s stage1=%s judge=%s",
+        _state.traffic_cfg.pre_filter_enabled,
+        _state.traffic_cfg.stage1_enabled,
+        _state.traffic_cfg.judge_enabled,
     )
 
     _log_startup_config()
@@ -563,6 +622,165 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
 
 
 # ---------------------------------------------------------------------------
+# SQL — traffic upsert (separate from buyer/provider — has traffic_source, pricing_model)
+# ---------------------------------------------------------------------------
+
+def _to_list(value) -> list:
+    """Coerce None / str / list to a plain list (used by all persist helpers)."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+_TRAFFIC_UPSERT_SQL = f"""
+INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
+    group_id, message_id, timestamp, username, text,
+    is_lead, confidence, lead_type,
+    vertical, geo,
+    traffic_source, pricing_model,
+    evidence_quote, rationale, glossary_terms_seen, elapsed_ms,
+    verdict, judge_reason,
+    pipeline,
+    db_write_status, db_write_error,
+    classified_at
+) VALUES (
+    $1,  $2,  $3,  $4,  $5,
+    $6,  $7,  $8,
+    $9,  $10,
+    $11, $12,
+    $13, $14, $15, $16,
+    $17, $18,
+    $19,
+    $20, $21,
+    NOW()
+)
+ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
+    timestamp             = EXCLUDED.timestamp,
+    username              = EXCLUDED.username,
+    text                  = EXCLUDED.text,
+    is_lead               = EXCLUDED.is_lead,
+    confidence            = EXCLUDED.confidence,
+    lead_type             = EXCLUDED.lead_type,
+    vertical              = EXCLUDED.vertical,
+    geo                   = EXCLUDED.geo,
+    traffic_source        = EXCLUDED.traffic_source,
+    pricing_model         = EXCLUDED.pricing_model,
+    evidence_quote        = EXCLUDED.evidence_quote,
+    rationale             = EXCLUDED.rationale,
+    glossary_terms_seen   = EXCLUDED.glossary_terms_seen,
+    elapsed_ms            = EXCLUDED.elapsed_ms,
+    verdict               = EXCLUDED.verdict,
+    judge_reason          = EXCLUDED.judge_reason,
+    pipeline              = EXCLUDED.pipeline,
+    db_write_status       = EXCLUDED.db_write_status,
+    db_write_error        = EXCLUDED.db_write_error,
+    classified_at         = NOW()
+RETURNING id;
+"""
+
+
+async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
+    """Write traffic classification result to PostgreSQL.
+
+    Only writes rows where verdict is TRAFFIC_PROVIDER or TRAFFIC_LEAD.
+    Skips MISTAKE and non-leads to keep the table clean.
+    Also performs cross-user text dedup: same text from different users
+    in the same lead_type → mark as multiacc duplicate.
+    """
+    import hashlib
+
+    verdict = result.get("verdict")
+    lead_type = result.get("lead_type")
+
+    # Only persist confirmed traffic leads
+    if verdict not in ("TRAFFIC_PROVIDER", "TRAFFIC_LEAD"):
+        result["db_write_status"] = "skipped"
+        result["db_write_error"] = None
+        return result
+
+    try:
+        async with _state.pool.acquire() as conn:
+
+            # ── Cross-user text dedup ─────────────────────────────────────────
+            text = result.get("text") or ""
+            if text.strip():
+                text_hash = hashlib.md5(text.lower().encode()).hexdigest()
+                existing = await conn.fetchrow(
+                    f"""
+                    SELECT id FROM {_TABLE_PREFIX}classified_messages_dirty
+                    WHERE lead_type = $1
+                    AND md5(lower(trim(text))) = $2
+                    LIMIT 1
+                    """,
+                    lead_type,
+                    text_hash,
+                )
+                if existing:
+                    logger.info(
+                        "[traffic] cross-user duplicate message_id=%s existing_id=%s",
+                        result.get("message_id"), existing["id"],
+                    )
+                    result["verdict"] = "MISTAKE"
+                    result["judge_reason"] = f"[multiacc duplicate of id={existing['id']}]"
+                    result["rationale"]    = f"[multiacc duplicate of id={existing['id']}]"
+                    result["db_id"] = existing["id"]
+                    result["db_write_status"] = "skipped"
+                    result["db_write_error"]  = None
+                    return result
+
+            # ── Geo normalisation ─────────────────────────────────────────────
+            geo_list = _to_list(result.get("geo"))
+            geo_processed = await process_geo(
+                message_id=result.get("message_id"),
+                raw_geo_list=geo_list,
+                payment_methods=[],
+                conn=conn,
+            )
+
+            # ── Write ─────────────────────────────────────────────────────────
+            row = await conn.fetchrow(
+                _TRAFFIC_UPSERT_SQL,
+                group_id,                                           # $1
+                result.get("message_id"),                           # $2
+                _parse_dt(result.get("timestamp")),                 # $3
+                result.get("username"),                             # $4
+                result.get("text"),                                 # $5
+                result.get("is_lead", False),                       # $6
+                {"high": 0.9, "medium": 0.6, "low": 0.3}.get(result.get("confidence") or "", None),  # $7                           # $7
+                lead_type,                                          # $8
+                _jsonb(_to_list(result.get("vertical"))),           # $9
+                _jsonb(geo_processed or geo_list),                  # $10
+                _jsonb(_to_list(result.get("traffic_source"))),     # $11
+                _jsonb(_to_list(result.get("pricing_model"))),      # $12
+                result.get("evidence_quote"),                       # $13
+                result.get("rationale"),                            # $14
+                _jsonb(_to_list(result.get("glossary_terms_seen"))),# $15
+                result.get("elapsed_ms"),                           # $16
+                result.get("verdict"),                              # $17
+                result.get("judge_reason"),                         # $18
+                "traffic",                                          # $19 pipeline
+                "ok",                                               # $20
+                None,                                               # $21
+            )
+
+        result["db_write_status"] = "ok"
+        result["db_write_error"]  = None
+        result["db_id"] = row["id"] if row else None
+
+    except Exception as exc:
+        error_msg = str(exc)
+        logger.error(
+            "Traffic DB write failed for message_id=%s: %s",
+            result.get("message_id"), error_msg,
+        )
+        result["db_write_status"] = "failed"
+        result["db_write_error"]  = error_msg
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -750,27 +968,7 @@ async def classify(body: ClassifyRequest) -> dict:
                         body.message_id, exc, exc_info=True,
                     )
 
-            # ── 2. Provider Pipeline ──────────────────────────────────────
-            try:
-                provider_result = await asyncio.to_thread(
-                    classify_provider_message,
-                    text=body.text,
-                    glossary=_state.provider_glossary,
-                    llm=_state.provider_llm,
-                    cfg=_state.provider_cfg,
-                    message_id=body.message_id,
-                    username=body.username,
-                    timestamp=body.timestamp,
-                    context=context,
-                    extractor=_state.provider_extractor,
-                )
-            except Exception as exc:
-                logger.error(
-                    "[provider] PIPELINE ERROR message_id=%s: %s",
-                    body.message_id, exc, exc_info=True,
-                )
-
-            # ── Provider Result & Persist ─────────────────────────────────
+            # ── 2. Provider Result & Persist ─────────────────────────────
             if provider_result is not None:
                 is_prov = provider_result.get("is_provider")
                 verdict = provider_result.get("verdict")
@@ -839,6 +1037,63 @@ async def classify(body: ClassifyRequest) -> dict:
                         body.message_id, exc, exc_info=True,
                     )
 
+            # ── 3. Traffic Result & Persist ───────────────────────────────
+            traffic_result = None if traffic_result is None else traffic_result
+
+            if traffic_result is not None:
+                verdict  = traffic_result.get("verdict")
+                lead_type = traffic_result.get("lead_type")
+                conf     = traffic_result.get("confidence")
+                elapsed  = traffic_result.get("elapsed_ms", 0)
+
+                logger.info(
+                    "[traffic] done message_id=%s verdict=%s lead_type=%s "
+                    "confidence=%s elapsed=%.0fms",
+                    body.message_id, verdict, lead_type, conf, elapsed or 0,
+                )
+
+                if verdict in ("TRAFFIC_PROVIDER", "TRAFFIC_LEAD"):
+                    logger.info(
+                        "[traffic] LEAD ✓ message_id=%s lead_type=%s "
+                        "vertical=%s geo=%s traffic_source=%s pricing_model=%s",
+                        body.message_id,
+                        lead_type,
+                        traffic_result.get("vertical"),
+                        traffic_result.get("geo"),
+                        traffic_result.get("traffic_source"),
+                        traffic_result.get("pricing_model"),
+                    )
+                    logger.info(
+                        "[traffic] evidence: %r",
+                        (traffic_result.get("evidence_quote") or "")[:120],
+                    )
+                    logger.info(
+                        "[traffic] judge_reason: %s",
+                        traffic_result.get("judge_reason", ""),
+                    )
+                else:
+                    logger.info(
+                        "[traffic] not a lead message_id=%s rationale=%s",
+                        body.message_id,
+                        (traffic_result.get("rationale") or "")[:100],
+                    )
+
+                try:
+                    traffic_result = await _persist_traffic(
+                        body.group_id, traffic_result,
+                    )
+                    logger.info(
+                        "[traffic] persisted message_id=%s db_status=%s db_id=%s",
+                        body.message_id,
+                        traffic_result.get("db_write_status"),
+                        traffic_result.get("db_id"),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[traffic] persist FAILED message_id=%s: %s",
+                        body.message_id, exc, exc_info=True,
+                    )
+
             t_total = (time.perf_counter() - t_start) * 1000
             logger.info("[classify] ━━━ DONE message_id=%s total=%.0fms ━━━", body.message_id, t_total)
 
@@ -865,6 +1120,7 @@ async def health() -> dict:
         "status": "ok",
         "glossary_entries": len(_state.glossary),
         "provider_glossary_entries": len(_state.provider_glossary),
+        "traffic_glossary_entries": len(_state.traffic_glossary),
         "db": db_status,
     }
 
@@ -888,19 +1144,26 @@ async def debug() -> dict:
             "provider_llm":   _state.provider_llm.model,
             "stage1_model":   os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider_llm)"),
             "judge_model":    os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider_llm)"),
+            "traffic_stage1": os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic_llm)"),
+            "traffic_judge":  os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic_llm)"),
             "glossary_model": os.environ.get("GLOSSARY_MODEL", "(not set)"),
         },
         "config": {
-            "pre_filter_enabled": _state.provider_cfg.pre_filter_enabled,
-            "pre_filter_db_path": _state.provider_cfg.pre_filter_db_path,
-            "stage1_enabled":     _state.provider_cfg.stage1_enabled,
-            "judge_enabled":      _state.provider_cfg.judge_enabled,
-            "db_prefix":          _TABLE_PREFIX or "(none)",
-            "constraint":         f"{_TABLE_PREFIX}uq_group_message_leadtype",
+            "pre_filter_enabled":         _state.provider_cfg.pre_filter_enabled,
+            "pre_filter_db_path":         _state.provider_cfg.pre_filter_db_path,
+            "stage1_enabled":             _state.provider_cfg.stage1_enabled,
+            "judge_enabled":              _state.provider_cfg.judge_enabled,
+            "traffic_pre_filter_enabled": _state.traffic_cfg.pre_filter_enabled,
+            "traffic_pre_filter_db_path": _state.traffic_cfg.pre_filter_db_path,
+            "traffic_stage1_enabled":     _state.traffic_cfg.stage1_enabled,
+            "traffic_judge_enabled":      _state.traffic_cfg.judge_enabled,
+            "db_prefix":                  _TABLE_PREFIX or "(none)",
+            "constraint":                 f"{_TABLE_PREFIX}uq_group_message_leadtype",
         },
         "glossary": {
             "buyer_entries":    len(_state.glossary),
             "provider_entries": len(_state.provider_glossary),
+            "traffic_entries":  len(_state.traffic_glossary),
         },
         "prompt_files": {
             "provider_prompt_file":     pp.__file__,
@@ -918,6 +1181,6 @@ async def debug() -> dict:
         },
         "loaded_modules": sorted([
             k for k in sys.modules
-            if "provider" in k.lower() or "psp" in k.lower()
+            if "provider" in k.lower() or "psp" in k.lower() or "traffic" in k.lower()
         ]),
     }
