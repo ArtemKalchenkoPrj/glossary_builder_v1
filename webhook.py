@@ -849,16 +849,13 @@ async def classify(body: ClassifyRequest) -> dict:
                 return
 
             logger.info(
-                "[classify] dedup=ok → starting sequential pipelines message_id=%s",
+                "[classify] dedup=ok → starting parallel pipelines message_id=%s",
                 body.message_id,
             )
 
-            buyer_result = None
-            provider_result = None
-
-            # ── 1. Buyer Pipeline ─────────────────────────────────────────
-            try:
-                buyer_result = await asyncio.to_thread(
+            # ── Classify all three pipelines in parallel ───────────────────
+            _raw = await asyncio.gather(
+                asyncio.to_thread(
                     classify_single_message,
                     text=body.text,
                     glossary=_state.glossary,
@@ -870,12 +867,46 @@ async def classify(body: ClassifyRequest) -> dict:
                     context=context,
                     rag_index=_state.rag_index,
                     judge_system=_state.judge_system,
-                )
-            except Exception as exc:
-                logger.error(
-                    "[buyer] PIPELINE ERROR message_id=%s: %s",
-                    body.message_id, exc, exc_info=True,
-                )
+                ),
+                asyncio.to_thread(
+                    classify_provider_message,
+                    text=body.text,
+                    glossary=_state.provider_glossary,
+                    llm=_state.provider_llm,
+                    cfg=_state.provider_cfg,
+                    message_id=body.message_id,
+                    username=body.username,
+                    timestamp=body.timestamp,
+                    context=context,
+                    extractor=_state.provider_extractor,
+                ),
+                asyncio.to_thread(
+                    classify_traffic_message,
+                    body.text,
+                    _state.traffic_glossary,
+                    _state.traffic_llm,
+                    _state.traffic_cfg,
+                    message_id=body.message_id,
+                    username=body.username,
+                    timestamp=body.timestamp,
+                    context=context,
+                ),
+                return_exceptions=True,
+            )
+
+            buyer_result    = _raw[0] if not isinstance(_raw[0], BaseException) else None
+            provider_result = _raw[1] if not isinstance(_raw[1], BaseException) else None
+            traffic_result  = _raw[2] if not isinstance(_raw[2], BaseException) else None
+
+            if isinstance(_raw[0], BaseException):
+                logger.error("[buyer] PIPELINE ERROR message_id=%s: %s",
+                             body.message_id, _raw[0], exc_info=_raw[0])
+            if isinstance(_raw[1], BaseException):
+                logger.error("[provider] PIPELINE ERROR message_id=%s: %s",
+                             body.message_id, _raw[1], exc_info=_raw[1])
+            if isinstance(_raw[2], BaseException):
+                logger.error("[traffic] PIPELINE ERROR message_id=%s: %s",
+                             body.message_id, _raw[2], exc_info=_raw[2])
 
             # ── Buyer Result & Persist ────────────────────────────────────
             if buyer_result is not None:
