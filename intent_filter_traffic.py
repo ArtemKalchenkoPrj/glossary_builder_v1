@@ -104,6 +104,27 @@ INTENT_SIGNALS: list[str] = [
     "adult traffic", "betting traffic", "igaming traffic",
 ]
 
+
+STOP_WORDS: list[str] = [
+    "страховой депозит",
+    "рапира",
+    "трансгран",
+    "геймбет",
+    "гембет",
+    "белые треугольники",
+    "апелляции: до",
+    "rapira net",
+    "pdf чеки",
+    "пдф чеки",
+    "мобком",
+    "мобильная коммерция",
+    "бт-трафик",
+    "bt трафик",
+    "recovery leads",
+    "database leads",
+    "платежное решение",
+]
+
 # ---------------------------------------------------------------------------
 # Glossary loader
 # ---------------------------------------------------------------------------
@@ -205,9 +226,14 @@ def pre_filter(text: str, db_path: str = DEFAULT_DB) -> bool:
     if not text:
         return False
     low = text.lower()
-    if any(s in low for s in INTENT_SIGNALS):
-        return True
-    return any(t in low for t in load_glossary_terms(db_path))
+
+    # Stop words — drop immediately before any other check
+    if any(s in low for s in STOP_WORDS):
+        return False
+
+    has_term = any(t in low for t in load_glossary_terms(db_path))
+    has_signal = any(s in low for s in INTENT_SIGNALS)
+    return has_term or has_signal
 
 
 # ---------------------------------------------------------------------------

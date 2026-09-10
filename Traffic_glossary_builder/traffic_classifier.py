@@ -472,8 +472,8 @@ def classify_traffic_message(
     if cfg.pre_filter_enabled:
         from intent_filter_traffic import pre_filter
         passes = pre_filter(text, cfg.pre_filter_db_path)
-        if not passes and not glossary_terms:
-            decision.rationale = "[pre_filter: no domain terms or intent signals]"
+        if not passes:
+            decision.rationale = "[pre_filter: blocked]"
             return _done("pre_filter_miss")
 
     # ── Stage 4: Stage 1 micro-LLM ───────────────────────────────────────────
