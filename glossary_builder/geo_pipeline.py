@@ -5,7 +5,11 @@ Pipeline that runs after the classifier extracts a raw geo list:
     Stage 1  load_maps()                — fetch normalization + expansion dicts from DB
     Stage 2  _pre_normalize()           — lowercase + strip every raw value
     Stage 3  normalize_geo()            — map raw values to canonical codes via norm_map;
-                                          unknown values are logged to geo_unknown_values
+                                          unknown values first go through Stage 3.5;
+                                          unresolvable values are logged to geo_unknown_values
+    Stage 3.5 _llm_resolve_geo()        — LLM fallback for values not found in norm_map;
+                                          on success, persists new mapping to geo_normalization_map
+                                          so future lookups skip the LLM entirely
     Stage 4  expand_geo()               — expand canonical codes to child codes via expansion_map
     Stage 5  apply_payment_geo()        — add geo codes implied by LOCAL payment methods
                                           (e.g. "монобанк" -> ["UA"]), deduplicated.
@@ -30,7 +34,89 @@ from typing import Optional
 
 import asyncpg
 
+from .config import LLMConfig
+from .llm import LLMClient, LLMError
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Module-level LLM client for geo resolution.
+# Lightweight task — nano model is sufficient.
+#
+# NOTE: this client forces model="gpt-4.1-nano" which requires OpenAI.
+# If your deployment uses Anthropic as the primary provider (ANTHROPIC_API_KEY
+# is set but OPENAI_API_KEY is not), _llm_resolve_geo will log an error and
+# fall back to "garbage" — no crash, just no LLM resolution. To enable it,
+# ensure OPENAI_API_KEY is set alongside your Anthropic key.
+# ---------------------------------------------------------------------------
+
+_geo_llm = LLMClient(LLMConfig(model="gpt-4.1-nano", max_tokens=50, temperature=0.0))
+
+_GEO_SYSTEM = """\
+You are a geo code resolver for a payments industry database.
+You receive a raw geographic value (a country name, region, or abbreviation in any language) \
+and a list of valid canonical codes.
+Your job: return the single best matching code from the list.
+
+Rules:
+- Respond with ONLY the code. No explanation, no punctuation, nothing else.
+- If you are not confident, respond with exactly: garbage
+- When in doubt, respond with: garbage\
+"""
+
+
+# ---------------------------------------------------------------------------
+# Stage 3.5 — LLM fallback resolver
+# ---------------------------------------------------------------------------
+
+def _llm_resolve_geo(raw: str, valid_codes: set[str]) -> str:
+    """Try to map an unknown raw geo value to a canonical code via LLM.
+
+    Synchronous — blocks the event loop briefly, which is acceptable given
+    the low call volume (~500/month).
+
+    Args:
+        raw:         The original raw value as extracted from the message.
+        valid_codes: Set of all canonical codes currently in geo_normalization_map.
+
+    Returns:
+        A code from valid_codes if the LLM resolved it confidently,
+        or "garbage" if the value could not be mapped.
+    """
+    codes_str = ", ".join(sorted(valid_codes))
+    user = f"Raw value: {raw}\nValid codes: {codes_str}"
+
+    try:
+        resp = _geo_llm.complete(system=_GEO_SYSTEM, user=user)
+        candidate = resp.text.strip()
+
+        # Accept if the LLM returned a code from our valid set (case-insensitive).
+        candidate_upper = candidate.upper()
+        if candidate_upper in valid_codes:
+            logger.info(
+                "geo_pipeline: LLM resolved %r -> %r",
+                raw, candidate_upper,
+            )
+            return candidate_upper
+
+        # Explicit garbage signal.
+        if candidate.lower() == "garbage":
+            return "garbage"
+
+        # Anything else (hallucinated code, multi-word response, etc.) → garbage.
+        logger.warning(
+            "geo_pipeline: LLM returned unrecognised value %r for raw=%r — treating as garbage",
+            candidate, raw,
+        )
+        return "garbage"
+
+    except LLMError as exc:
+        logger.error(
+            "geo_pipeline: LLM resolve failed for raw=%r: %s — treating as garbage",
+            raw, exc,
+        )
+        return "garbage"
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +161,7 @@ def _pre_normalize(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 — normalize geo list via norm_map
+# Stage 3 — normalize geo list via norm_map (with Stage 3.5 LLM fallback)
 # ---------------------------------------------------------------------------
 
 async def normalize_geo(
@@ -86,10 +172,18 @@ async def normalize_geo(
 ) -> list[str]:
     """Map each raw geo value to its canonical code.
 
-    Unknown values are logged to geo_unknown_values and skipped.
+    For values not found in norm_map, Stage 3.5 attempts LLM resolution:
+    - On success: persists the new mapping to geo_normalization_map (so
+      the next identical value hits the DB cache and skips the LLM),
+      updates norm_map in-place for the remainder of this call, and
+      includes the resolved code in the result.
+    - On garbage: logs to geo_unknown_values as before.
     """
     normalized: list[str] = []
     unknown: list[tuple[str, int]] = []
+
+    # Derive valid target codes once — used by the LLM resolver.
+    valid_codes: set[str] = set(norm_map.values())
 
     for raw in geo_list:
         key = _pre_normalize(raw)
@@ -99,12 +193,36 @@ async def normalize_geo(
         canonical = norm_map.get(key)
         if canonical:
             normalized.append(canonical)
+            continue
+
+        # ---- Stage 3.5: LLM fallback ----
+        logger.warning(
+            "geo_pipeline: unknown geo value %r in message_id=%s — attempting LLM resolution",
+            raw, message_id,
+        )
+
+        resolved = _llm_resolve_geo(raw, valid_codes)
+
+        if resolved != "garbage":
+            # Persist to DB so this raw_value never reaches the LLM again.
+            await conn.execute(
+                """
+                INSERT INTO geo_normalization_map (raw_value, normalized)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
+                """,
+                key, resolved,
+            )
+            # Update local norm_map so duplicate values in this batch
+            # are resolved instantly without another LLM call.
+            norm_map[key] = resolved
+            valid_codes.add(resolved)  # resolved code was already in set, but safe to re-add
+            normalized.append(resolved)
         else:
             logger.warning(
-                "geo_pipeline: unknown geo value %r in message_id=%s — "
+                "geo_pipeline: LLM could not resolve %r in message_id=%s — "
                 "logged to geo_unknown_values",
-                raw,
-                message_id,
+                raw, message_id,
             )
             if message_id is not None:
                 unknown.append((raw, message_id))
@@ -263,7 +381,8 @@ async def process_geo(
     Steps:
         1. Load norm_map, expansion_map, local_method_map from the DB.
         2. Normalize each raw value (lowercase + strip).  [inside normalize_geo]
-        3. Map to canonical codes; log unknowns to geo_unknown_values.
+        3. Map to canonical codes; unknown values go through LLM fallback (3.5)
+           before being logged to geo_unknown_values.
         4. Expand canonical codes using expansion_map.
         5. Append geo codes implied by LOCAL payment_methods, deduplicated.
         6. Log payment methods not found in any payment_options.aliases.
@@ -288,7 +407,7 @@ async def process_geo(
     norm_map, expansion_map = await load_maps(conn)
     local_method_map = await load_local_method_geo_map(conn)
 
-    # Stages 2 + 3 — pre-normalize then canonicalize.
+    # Stages 2 + 3 (+3.5) — pre-normalize, canonicalize, LLM fallback for unknowns.
     canonical = await normalize_geo(raw_geo_list or [], norm_map, message_id, conn)
 
     # Stage 4 — expand.
