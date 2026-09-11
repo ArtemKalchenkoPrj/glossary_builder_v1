@@ -128,7 +128,10 @@ The author wants to ACQUIRE traffic or leads. Signals:
   ✗ Job postings: "ищем media buyer в штат", "BDM — Remote, фикс + %",
     "Business Development Manager — Crypto Media Buying Team, Remote"
   ✗ General discussion with no buy/sell intent: "трафик растёт"
-  ✗ Recovery / scam: "recovery leads", "returned victims"\
+  ✗ Recovery / scam: "recovery leads", "returned victims"
+  ✗ P2P payment operators recruiting card operators / traders: phrases like "набор трейдеров", 
+    "площадка для трейдеров", "мэтчинг", "Pay IN/Pay OUT %", "страховой депозит", "БТ с PDF" 
+    indicate P2P card fraud infrastructure, not affiliate traffic.\
 """
 
 # ---------------------------------------------------------------------------
