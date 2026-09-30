@@ -39,7 +39,7 @@ wheels/
 /.idea/vcs.xml
 /tests/test_apply_payment_geo.py
 /tests/test_deduplication.py
-/tests/conftest.py
+/conftest.py
 /tests/test_keyword_filter.py
 /tests/test_positive.py
 /Platform classifier/
@@ -93,3 +93,6 @@ ignored_usernames.txt
 /Traffic_glossary_builder/data/test_df.csv
 /Traffic_glossary_builder/traffic_classifier_plan.md
 /Traffic_glossary_builder/data/very_not_leads_df.csv
+/conftest.py
+/pytest.ini
+/verticals.py

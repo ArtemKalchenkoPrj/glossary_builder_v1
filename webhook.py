@@ -38,6 +38,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from scam_detector import check_scam
+from banned_usernames_cache import BannedUsernamesCache
 
 import asyncpg
 from dotenv import load_dotenv
@@ -161,7 +162,8 @@ class _AppState:
 
     # Shared
     pool: asyncpg.Pool
-    ignored_usernames: frozenset[str] = frozenset()
+    banned_cache: BannedUsernamesCache = None  # type: ignore[assignment]
+    listener_task: asyncio.Task = None         # type: ignore[assignment]
 
 _state = _AppState()
 
@@ -310,16 +312,15 @@ async def lifespan(app: FastAPI):
     dsn = os.environ["POSTGRES_DSN"]
     _state.pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
 
-    _ignored_path = project_root / "ignored_usernames.txt"
-    if _ignored_path.exists():
-        lines = _ignored_path.read_text(encoding="utf-8").splitlines()
-        _state.ignored_usernames = frozenset(
-            line.strip() for line in lines
-            if line.strip() and not line.strip().startswith("#")
-        )
-        logger.info("[startup] ignored_usernames: %d loaded", len(_state.ignored_usernames))
-    else:
-        logger.info("[startup] ignored_usernames: file not found, skipping")
+    # ── Banned usernames cache ────────────────────────────────────────────
+    _state.banned_cache = BannedUsernamesCache()
+    _state.banned_cache.load_from_file(project_root / "ignored_usernames.txt")
+    async with _state.pool.acquire() as conn:
+        await _state.banned_cache.load_from_db(conn)
+    _state.listener_task = asyncio.create_task(
+        _state.banned_cache.start_listener(dsn)
+    )
+    logger.info("[startup] banned_cache ready, listener started")
 
     logger.info(
         "Startup complete — buyer glossary: %d, provider glossary: %d",
@@ -354,6 +355,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if _state.listener_task:
+        _state.listener_task.cancel()
+        await asyncio.gather(_state.listener_task, return_exceptions=True)
     await _state.pool.close()
 
 
@@ -833,8 +837,8 @@ async def classify(body: ClassifyRequest) -> dict:
                     )
                     return
 
-            if body.username and body.username in _state.ignored_usernames:
-                logger.info("[classify] ignored username=%r message_id=%s", body.username, body.message_id)
+            if _state.banned_cache.is_banned(body.username):
+                logger.info("[classify] banned username=%r message_id=%s", body.username, body.message_id)
                 return
 
             if await check_scam(
