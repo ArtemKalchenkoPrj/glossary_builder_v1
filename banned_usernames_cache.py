@@ -101,7 +101,7 @@ class BannedUsernamesCache:
         db_names = {row["username"] for row in rows}
         self._usernames.update(db_names)
         logger.info(
-            "[banned_cache] loaded %d usernames from DB",
+            "[banned_cache] loaded %d usernames from DB (total in cache: %d)",
             len(db_names), len(self._usernames),
         )
 
@@ -180,7 +180,7 @@ class BannedUsernamesCache:
                 rows = await conn.fetch("SELECT username FROM banned_usernames")
                 self._usernames = {row["username"] for row in rows}
                 logger.info(
-                    "[banned_cache] loaded %d usernames from DB",
+                    "[banned_cache] loaded %d usernames from DB (total in cache: %d)",
                     len(self._usernames),
                 )
             finally:
