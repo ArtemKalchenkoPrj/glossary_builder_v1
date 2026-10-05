@@ -1,9 +1,10 @@
 """FastAPI webhook for single-message lead classification.
 
-Three parallel pipelines:
-    1. Buyer pipeline    — classify_single_message → cascade (crypto, casino, iban)
-    2. Provider pipeline — classify_provider_message (glossary-based)
-    3. Traffic pipeline  — classify_traffic_message (affiliate traffic buyers/sellers)
+Four parallel pipelines:
+    1. Buyer pipeline       — classify_single_message → cascade (crypto, casino, iban)
+    2. Provider pipeline    — classify_provider_message (glossary-based)
+    3. Traffic pipeline     — classify_traffic_message (affiliate traffic buyers/sellers)
+    4. Crypto Cards pipeline— classify_crypto_cards_message (crypto card seekers/providers)
 
 Exposes two endpoints:
     POST /classify  — classify a message and persist the result to PostgreSQL
@@ -16,10 +17,13 @@ Required .env variables:
     POSTGRES_DSN=postgresql://user:password@host:5432/dbname
     PSP_PROVIDERS_OPENROUTER_API_KEY=sk-or-...  (for provider pipeline)
     TRAFFIC_OPENROUTER_API_KEY=sk-or-...        (for traffic pipeline)
+    CRYPTO_CARDS_OPENROUTER_API_KEY=sk-or-...   (for crypto cards pipeline)
     PROVIDER_STAGE1_MODEL=openai/gpt-4.1-mini   (optional)
     PROVIDER_JUDGE_MODEL=openai/gpt-4.1-mini    (optional)
     TRAFFIC_STAGE1_MODEL=openai/gpt-4.1-mini    (optional)
     TRAFFIC_JUDGE_MODEL=openai/gpt-4.1-mini     (optional)
+    CRYPTO_CARDS_STAGE1_MODEL=openai/gpt-4.1-mini (optional)
+    CRYPTO_CARDS_JUDGE_MODEL=openai/gpt-4.1-mini  (optional)
 
 Migration (run once):
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS company TEXT DEFAULT NULL;
@@ -77,6 +81,14 @@ from Traffic_glossary_builder.traffic_classifier import (
     make_traffic_llm_client,
 )
 from Traffic_glossary_builder.traffic_decision import TrafficExtractionConfig
+
+# Crypto Cards pipeline imports
+from Crypto_cards_glossary_builder.crypto_cards_classifier import (
+    classify_crypto_cards_message,
+    load_crypto_cards_glossary,
+    make_crypto_cards_llm_client,
+)
+from Crypto_cards_glossary_builder.crypto_cards_decision import CryptoCardsExtractionConfig
 
 _TABLE_PREFIX = os.getenv('TABLE_PREFIX') or ""
 logger = logging.getLogger(__name__)
@@ -160,6 +172,11 @@ class _AppState:
     traffic_llm: object
     traffic_cfg: TrafficExtractionConfig
 
+    # Crypto Cards pipeline
+    crypto_cards_glossary: list[dict]
+    crypto_cards_llm: object
+    crypto_cards_cfg: CryptoCardsExtractionConfig
+
     # Shared
     pool: asyncpg.Pool
     banned_cache: BannedUsernamesCache = None  # type: ignore[assignment]
@@ -230,6 +247,23 @@ def _log_startup_config() -> None:
     logger.info("  Pre-filter     : %s", _state.traffic_cfg.pre_filter_enabled)
     logger.info("  Stage1         : %s", _state.traffic_cfg.stage1_enabled)
     logger.info("  Judge          : %s", _state.traffic_cfg.judge_enabled)
+
+    # ── Crypto Cards pipeline ─────────────────────────────────────────────
+    logger.info(sep)
+    logger.info("  CRYPTO CARDS PIPELINE")
+    logger.info(
+        "  Stage1 model   : %s",
+        os.environ.get("CRYPTO_CARDS_STAGE1_MODEL", "(same as crypto_cards LLM)"),
+    )
+    logger.info(
+        "  Judge model    : %s",
+        os.environ.get("CRYPTO_CARDS_JUDGE_MODEL", "(same as crypto_cards LLM)"),
+    )
+    logger.info("  Glossary       : %d entries", len(_state.crypto_cards_glossary))
+    logger.info("  Pre-filter     : %s", _state.crypto_cards_cfg.pre_filter_enabled)
+    logger.info("  Pre-filter DB  : %s", _state.crypto_cards_cfg.pre_filter_db_path)
+    logger.info("  Stage1         : %s", _state.crypto_cards_cfg.stage1_enabled)
+    logger.info("  Judge          : %s", _state.crypto_cards_cfg.judge_enabled)
 
     # ── Prompt previews ───────────────────────────────────────────────────
     logger.info(sep)
@@ -349,6 +383,30 @@ async def lifespan(app: FastAPI):
         _state.traffic_cfg.pre_filter_enabled,
         _state.traffic_cfg.stage1_enabled,
         _state.traffic_cfg.judge_enabled,
+    )
+
+    # ── Crypto Cards pipeline resources ───────────────────────────────────
+    crypto_cards_db_path = str(
+        project_root / "Crypto_cards_classifier/data/crypto_cards_glossary.db"
+    )
+    _state.crypto_cards_glossary = load_crypto_cards_glossary(crypto_cards_db_path)
+    logger.info(
+        "[startup] crypto_cards glossary loaded: %d terms from %s",
+        len(_state.crypto_cards_glossary), crypto_cards_db_path,
+    )
+
+    _state.crypto_cards_llm = make_crypto_cards_llm_client()
+    logger.info("[startup] crypto_cards LLM: ready (CRYPTO_CARDS_OPENROUTER_API_KEY)")
+
+    _state.crypto_cards_cfg = CryptoCardsExtractionConfig(
+        pre_filter_db_path=crypto_cards_db_path,
+        pre_filter_enabled=bool(_state.crypto_cards_glossary),
+    )
+    logger.info(
+        "[startup] crypto_cards pipeline ready: pre_filter=%s stage1=%s judge=%s",
+        _state.crypto_cards_cfg.pre_filter_enabled,
+        _state.crypto_cards_cfg.stage1_enabled,
+        _state.crypto_cards_cfg.judge_enabled,
     )
 
     _log_startup_config()
@@ -751,7 +809,7 @@ async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
                 result.get("username"),                             # $4
                 result.get("text"),                                 # $5
                 result.get("is_lead", False),                       # $6
-                {"high": 0.9, "medium": 0.6, "low": 0.3}.get(result.get("confidence") or "", None),  # $7                           # $7
+                {"high": 0.9, "medium": 0.6, "low": 0.3}.get(result.get("confidence") or "", None),  # $7
                 lead_type,                                          # $8
                 _jsonb(_to_list(result.get("vertical"))),           # $9
                 _jsonb(geo_processed or geo_list),                  # $10
@@ -776,6 +834,110 @@ async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
         error_msg = str(exc)
         logger.error(
             "Traffic DB write failed for message_id=%s: %s",
+            result.get("message_id"), error_msg,
+        )
+        result["db_write_status"] = "failed"
+        result["db_write_error"]  = error_msg
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# SQL — crypto cards direct write to client_ready_leads
+# ---------------------------------------------------------------------------
+
+_CRYPTO_CARDS_UPSERT_SQL = f"""
+INSERT INTO {_TABLE_PREFIX}client_ready_leads (
+    username, text, msg_timestamp,
+    lead_type, vertical, geo,
+    notes, approved_by, source_lead_id
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8, $9
+)
+RETURNING id;
+"""
+
+
+async def _persist_crypto_cards(group_id: Optional[int], result: dict) -> dict:
+    """Write crypto cards lead directly to client_ready_leads.
+
+    Bypasses classified_messages_dirty entirely.
+    Only writes REAL_CARD_SEEKER and REAL_CARD_PROVIDER verdicts.
+    notes format: [confidence: high | warmth] "quote" — Stage4 notes
+    """
+    import hashlib
+
+    verdict   = result.get("verdict")
+    lead_type = result.get("lead_type")
+
+    if verdict not in ("REAL_CARD_SEEKER", "REAL_CARD_PROVIDER"):
+        result["db_write_status"] = "skipped"
+        result["db_write_error"]  = None
+        return result
+
+    # Build combined notes field
+    conf_label   = result.get("confidence") or "low"
+    warmth_label = "warmth" if lead_type == "card_seeker" else "overlap"
+    evidence     = result.get("evidence_quote") or ""
+    stage4_notes = result.get("notes") or ""
+    notes_combined = (
+        f"[confidence: {conf_label} | {warmth_label}] "
+        f"\"{evidence}\" — {stage4_notes}"
+    )
+
+    conf_numeric = {"high": 0.9, "medium": 0.6, "low": 0.3}.get(conf_label, 0.3)
+
+    try:
+        async with _state.pool.acquire() as conn:
+
+            # ── Cross-user text dedup ─────────────────────────────────────────
+            text = result.get("text") or ""
+            if text.strip():
+                text_hash = hashlib.md5(text.lower().encode()).hexdigest()
+                existing = await conn.fetchrow(
+                    f"""
+                    SELECT id FROM {_TABLE_PREFIX}client_ready_leads
+                    WHERE lead_type = $1
+                    AND md5(lower(trim(text))) = $2
+                    LIMIT 1
+                    """,
+                    lead_type,
+                    text_hash,
+                )
+                if existing:
+                    logger.info(
+                        "[crypto_cards] cross-user duplicate message_id=%s existing_id=%s",
+                        result.get("message_id"), existing["id"],
+                    )
+                    result["db_id"]           = existing["id"]
+                    result["db_write_status"] = "skipped"
+                    result["db_write_error"]  = None
+                    return result
+
+            # ── Write ─────────────────────────────────────────────────────────
+            row = await conn.fetchrow(
+                _CRYPTO_CARDS_UPSERT_SQL,
+                result.get("username"),             # $1
+                text,                               # $2
+                _parse_dt(result.get("timestamp")), # $3
+                lead_type,                          # $4
+                _jsonb(["crypto_cards"]),            # $5 vertical (fixed)
+                _jsonb([]),                          # $6 geo (not extracted v1)
+                notes_combined,                     # $7
+                "huyochok",                         # $8 approved_by
+                None,                               # $9 source_lead_id
+            )
+
+        result["db_write_status"] = "ok"
+        result["db_write_error"]  = None
+        result["db_id"] = row["id"] if row else None
+
+    except Exception as exc:
+        error_msg = str(exc)
+        logger.error(
+            "Crypto Cards DB write failed for message_id=%s: %s",
             result.get("message_id"), error_msg,
         )
         result["db_write_status"] = "failed"
@@ -857,7 +1019,7 @@ async def classify(body: ClassifyRequest) -> dict:
                 body.message_id,
             )
 
-            # ── Classify all three pipelines in parallel ───────────────────
+            # ── Classify all four pipelines in parallel ────────────────────
             _raw = await asyncio.gather(
                 asyncio.to_thread(
                     classify_single_message,
@@ -895,12 +1057,23 @@ async def classify(body: ClassifyRequest) -> dict:
                     timestamp=body.timestamp,
                     context=context,
                 ),
+                asyncio.to_thread(
+                    classify_crypto_cards_message,
+                    body.text,
+                    _state.crypto_cards_glossary,
+                    _state.crypto_cards_llm,
+                    _state.crypto_cards_cfg,
+                    message_id=body.message_id,
+                    username=body.username,
+                    timestamp=body.timestamp,
+                ),
                 return_exceptions=True,
             )
 
-            buyer_result    = _raw[0] if not isinstance(_raw[0], BaseException) else None
-            provider_result = _raw[1] if not isinstance(_raw[1], BaseException) else None
-            traffic_result  = _raw[2] if not isinstance(_raw[2], BaseException) else None
+            buyer_result        = _raw[0] if not isinstance(_raw[0], BaseException) else None
+            provider_result     = _raw[1] if not isinstance(_raw[1], BaseException) else None
+            traffic_result      = _raw[2] if not isinstance(_raw[2], BaseException) else None
+            crypto_cards_result = _raw[3] if not isinstance(_raw[3], BaseException) else None
 
             if isinstance(_raw[0], BaseException):
                 logger.error("[buyer] PIPELINE ERROR message_id=%s: %s",
@@ -911,6 +1084,9 @@ async def classify(body: ClassifyRequest) -> dict:
             if isinstance(_raw[2], BaseException):
                 logger.error("[traffic] PIPELINE ERROR message_id=%s: %s",
                              body.message_id, _raw[2], exc_info=_raw[2])
+            if isinstance(_raw[3], BaseException):
+                logger.error("[crypto_cards] PIPELINE ERROR message_id=%s: %s",
+                             body.message_id, _raw[3], exc_info=_raw[3])
 
             # ── Buyer Result & Persist ────────────────────────────────────
             if buyer_result is not None:
@@ -1073,8 +1249,6 @@ async def classify(body: ClassifyRequest) -> dict:
                     )
 
             # ── 3. Traffic Result & Persist ───────────────────────────────
-            traffic_result = None if traffic_result is None else traffic_result
-
             if traffic_result is not None:
                 verdict  = traffic_result.get("verdict")
                 lead_type = traffic_result.get("lead_type")
@@ -1129,6 +1303,51 @@ async def classify(body: ClassifyRequest) -> dict:
                         body.message_id, exc, exc_info=True,
                     )
 
+            # ── 4. Crypto Cards Result & Persist ──────────────────────────
+            if crypto_cards_result is not None:
+                verdict   = crypto_cards_result.get("verdict")
+                lead_type = crypto_cards_result.get("lead_type")
+                conf      = crypto_cards_result.get("confidence")
+                elapsed   = crypto_cards_result.get("elapsed_ms", 0)
+
+                logger.info(
+                    "[crypto_cards] done message_id=%s verdict=%s lead_type=%s "
+                    "confidence=%s elapsed=%.0fms",
+                    body.message_id, verdict, lead_type, conf, elapsed or 0,
+                )
+
+                if verdict in ("REAL_CARD_SEEKER", "REAL_CARD_PROVIDER"):
+                    logger.info(
+                        "[crypto_cards] LEAD ✓ message_id=%s lead_type=%s "
+                        "evidence=%r notes=%s",
+                        body.message_id,
+                        lead_type,
+                        (crypto_cards_result.get("evidence_quote") or "")[:120],
+                        (crypto_cards_result.get("notes") or "")[:100],
+                    )
+                else:
+                    logger.info(
+                        "[crypto_cards] not a lead message_id=%s rationale=%s",
+                        body.message_id,
+                        (crypto_cards_result.get("rationale") or "")[:100],
+                    )
+
+                try:
+                    crypto_cards_result = await _persist_crypto_cards(
+                        body.group_id, crypto_cards_result,
+                    )
+                    logger.info(
+                        "[crypto_cards] persisted message_id=%s db_status=%s db_id=%s",
+                        body.message_id,
+                        crypto_cards_result.get("db_write_status"),
+                        crypto_cards_result.get("db_id"),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[crypto_cards] persist FAILED message_id=%s: %s",
+                        body.message_id, exc, exc_info=True,
+                    )
+
             t_total = (time.perf_counter() - t_start) * 1000
             logger.info("[classify] ━━━ DONE message_id=%s total=%.0fms ━━━", body.message_id, t_total)
 
@@ -1156,6 +1375,7 @@ async def health() -> dict:
         "glossary_entries": len(_state.glossary),
         "provider_glossary_entries": len(_state.provider_glossary),
         "traffic_glossary_entries": len(_state.traffic_glossary),
+        "crypto_cards_glossary_entries": len(_state.crypto_cards_glossary),
         "db": db_status,
     }
 
@@ -1175,30 +1395,37 @@ async def debug() -> dict:
 
     return {
         "models": {
-            "buyer_llm":      _state.llm.model,
-            "provider_llm":   _state.provider_llm.model,
-            "stage1_model":   os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider_llm)"),
-            "judge_model":    os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider_llm)"),
-            "traffic_stage1": os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic_llm)"),
-            "traffic_judge":  os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic_llm)"),
-            "glossary_model": os.environ.get("GLOSSARY_MODEL", "(not set)"),
+            "buyer_llm":           _state.llm.model,
+            "provider_llm":        _state.provider_llm.model,
+            "stage1_model":        os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider_llm)"),
+            "judge_model":         os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider_llm)"),
+            "traffic_stage1":      os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic_llm)"),
+            "traffic_judge":       os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic_llm)"),
+            "crypto_cards_stage1": os.environ.get("CRYPTO_CARDS_STAGE1_MODEL", "(same as crypto_cards_llm)"),
+            "crypto_cards_judge":  os.environ.get("CRYPTO_CARDS_JUDGE_MODEL", "(same as crypto_cards_llm)"),
+            "glossary_model":      os.environ.get("GLOSSARY_MODEL", "(not set)"),
         },
         "config": {
-            "pre_filter_enabled":         _state.provider_cfg.pre_filter_enabled,
-            "pre_filter_db_path":         _state.provider_cfg.pre_filter_db_path,
-            "stage1_enabled":             _state.provider_cfg.stage1_enabled,
-            "judge_enabled":              _state.provider_cfg.judge_enabled,
-            "traffic_pre_filter_enabled": _state.traffic_cfg.pre_filter_enabled,
-            "traffic_pre_filter_db_path": _state.traffic_cfg.pre_filter_db_path,
-            "traffic_stage1_enabled":     _state.traffic_cfg.stage1_enabled,
-            "traffic_judge_enabled":      _state.traffic_cfg.judge_enabled,
-            "db_prefix":                  _TABLE_PREFIX or "(none)",
-            "constraint":                 f"{_TABLE_PREFIX}uq_group_message_leadtype",
+            "pre_filter_enabled":              _state.provider_cfg.pre_filter_enabled,
+            "pre_filter_db_path":              _state.provider_cfg.pre_filter_db_path,
+            "stage1_enabled":                  _state.provider_cfg.stage1_enabled,
+            "judge_enabled":                   _state.provider_cfg.judge_enabled,
+            "traffic_pre_filter_enabled":      _state.traffic_cfg.pre_filter_enabled,
+            "traffic_pre_filter_db_path":      _state.traffic_cfg.pre_filter_db_path,
+            "traffic_stage1_enabled":          _state.traffic_cfg.stage1_enabled,
+            "traffic_judge_enabled":           _state.traffic_cfg.judge_enabled,
+            "crypto_cards_pre_filter_enabled": _state.crypto_cards_cfg.pre_filter_enabled,
+            "crypto_cards_pre_filter_db_path": _state.crypto_cards_cfg.pre_filter_db_path,
+            "crypto_cards_stage1_enabled":     _state.crypto_cards_cfg.stage1_enabled,
+            "crypto_cards_judge_enabled":      _state.crypto_cards_cfg.judge_enabled,
+            "db_prefix":                       _TABLE_PREFIX or "(none)",
+            "constraint":                      f"{_TABLE_PREFIX}uq_group_message_leadtype",
         },
         "glossary": {
-            "buyer_entries":    len(_state.glossary),
-            "provider_entries": len(_state.provider_glossary),
-            "traffic_entries":  len(_state.traffic_glossary),
+            "buyer_entries":        len(_state.glossary),
+            "provider_entries":     len(_state.provider_glossary),
+            "traffic_entries":      len(_state.traffic_glossary),
+            "crypto_cards_entries": len(_state.crypto_cards_glossary),
         },
         "prompt_files": {
             "provider_prompt_file":     pp.__file__,
@@ -1216,6 +1443,7 @@ async def debug() -> dict:
         },
         "loaded_modules": sorted([
             k for k in sys.modules
-            if "provider" in k.lower() or "psp" in k.lower() or "traffic" in k.lower()
+            if "provider" in k.lower() or "psp" in k.lower()
+            or "traffic" in k.lower() or "crypto_cards" in k.lower()
         ]),
     }
