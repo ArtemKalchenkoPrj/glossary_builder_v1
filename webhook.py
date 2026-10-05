@@ -927,7 +927,7 @@ async def _persist_crypto_cards(group_id: Optional[int], result: dict) -> dict:
                 _jsonb([]),                          # $6 geo (not extracted v1)
                 notes_combined,                     # $7
                 "huyochok",                         # $8 approved_by
-                None,                               # $9 source_lead_id
+                result.get("message_id") or 0,                               # $9 source_lead_id
             )
 
         result["db_write_status"] = "ok"
