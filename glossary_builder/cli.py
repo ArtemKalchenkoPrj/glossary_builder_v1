@@ -627,9 +627,36 @@ ALWAYS REAL_LEAD — never return MISTAKE for these:
 Output strict JSON only.
 """
 
+_JUDGE_SYSTEM_BP_V3 = _JUDGE_SYSTEM_V2 + (
+    "\n\n"
+    "═══ ADDITIONAL PATTERNS ═══\n"
+    "\n"
+    "MISTAKE — 'ПРИЕМКА' WITH TRAFFIC CONTEXT:\n"
+    "  'приемка' + ('трафик'/'игроки'/'верифицированные игроки'/'гембет трафик')\n"
+    "  WITHOUT payment infra terms → MISTAKE.\n"
+    "  BUT: 'приемка' + geo WITHOUT traffic terms → REAL_LEAD.\n"
+    "\n"
+    "MISTAKE — REPETITIVE SPAM:\n"
+    "  Same messages by same user with brand + fixed rates → MISTAKE.\n"
+    "  Exception: 'Курс: Рапира' in genuine procurement → REAL_LEAD.\n"
+    "\n"
+    "OVERRIDE — ALWAYS REAL_LEAD (these override ALL other rules):\n"
+    "  Any message with buyer-intent AND payment infrastructure terms:\n"
+    "  обработка, обрабов, трансгран, БТ, каскад, PSP, процессинг,\n"
+    "  провайдер, эквайринг, с2с, сбп, классика, платежка, хайчек,\n"
+    "  откупы, выплаты, мобком, бинги, реки, прием платежей,\n"
+    "  payment solution, payment processing, acquiring, payment gateway,\n"
+    "  payment provider, Stripe, MoneyGram, TWINT, Kakao, вичат,\n"
+    "  опенбанкинг, платёжные методы, ФТД, FTD, офферы\n"
+    "  → REAL_LEAD. Even if 'трафик' is mentioned.\n"
+    "  Buyer-intent + geo in payment group (no traffic terms) → REAL_LEAD.\n"
+    "  Merchant/brand self-ID + payment need → REAL_LEAD.\n"
+)
+
 JUDGE_PROMPTS_BY_VERSION = {
     "v1": _JUDGE_SYSTEM,
     "v2": _JUDGE_SYSTEM_V2,
+    "bp-v3": _JUDGE_SYSTEM_BP_V3,
 }
 
 @cli.command(name="judge-leads")

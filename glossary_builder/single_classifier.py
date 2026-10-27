@@ -196,7 +196,9 @@ def classify_single_message(
     timestamp: Optional[datetime] = None,
     context: Optional[list[Message]] = None,
     rag_index : Optional[RagIndex] = None,
-    judge_system : Optional[str] = None
+    judge_system : Optional[str] = None,
+    group_context_block: str = "",
+    bio_block: str = "",
 ) -> dict:
     """Classify one message through the full extract → judge pipeline.
 
@@ -263,6 +265,8 @@ def classify_single_message(
     decision: Optional[LeadDecision] = extractor.extract_one(
         message,
         context=context if context is not None else [],
+        group_context_block=group_context_block,
+        bio_block=bio_block,
     )
 
     if decision is None:

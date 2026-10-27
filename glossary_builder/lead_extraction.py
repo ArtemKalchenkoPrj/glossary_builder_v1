@@ -361,6 +361,7 @@ GLOSSARY (terms relevant to the target message):
 {glossary_block}
 
 {few_shot_block}\
+{extra_context}\
 CONTEXT (preceding and following messages from the same group):
 {context_block}
 
@@ -484,6 +485,9 @@ class LeadExtractor:
         self,
         target: Message,
         context: list[Message],
+        *,
+        group_context_block: str = "",
+        bio_block: str = "",
     ) -> LeadDecision | None:
         """Classify one message. Returns None if the message was skipped."""
 
@@ -582,9 +586,17 @@ class LeadExtractor:
             except Exception as e:
                 logger.warning(f"[rag] query failed: {e}")
 
+        extra_parts = []
+        if group_context_block:
+            extra_parts.append(group_context_block)
+        if bio_block:
+            extra_parts.append(bio_block)
+        extra_context = "\n\n".join(extra_parts) + "\n" if extra_parts else ""
+
         user = _USER_TEMPLATE.format(
             glossary_block=_format_glossary_block(glossary_hits),
             few_shot_block=few_shot_block,
+            extra_context=extra_context,
             context_block=_format_context(context),
             message_id=target.message_id,
             username=target.username or "anon",

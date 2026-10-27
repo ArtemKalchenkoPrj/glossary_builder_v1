@@ -180,12 +180,101 @@ class _AppState:
     crypto_cards_llm: object
     crypto_cards_cfg: CryptoCardsExtractionConfig
 
+    # Buyer pipeline — group context & bio
+    group_context: dict = None       # type: ignore[assignment]
+    group_id_to_name: dict = None    # type: ignore[assignment]
+
     # Shared
     pool: asyncpg.Pool
     banned_cache: BannedUsernamesCache = None  # type: ignore[assignment]
     listener_task: asyncio.Task = None         # type: ignore[assignment]
 
 _state = _AppState()
+
+# ---------------------------------------------------------------------------
+# Group context & bio templates (buyer pipeline enrichment)
+# ---------------------------------------------------------------------------
+
+_GROUP_CONTEXT_TEMPLATE = (
+    'Дополнительный контекст (вспомогательный, не определяющий):\n'
+    'Сообщение написано в группе "{group_name}". Историческое распределение '
+    'сигналов в этой группе: {distribution} (на основе {total_n} подтверждённых '
+    'случаев, confidence={confidence}).\n'
+    'Используй эту статистику ТОЛЬКО если в самом сообщении нет явного указания '
+    'на тип платежа/трафика и общий смысл неоднозначен. Если текст сообщения '
+    'содержит ясный сигнал (конкретный метод оплаты, явное упоминание платёжной '
+    'операции и т.д.) — полагайся на текст, а не на статистику группы.'
+)
+
+_GROUP_CONTEXT_TRAFFIC_HEAVY = (
+    'Контекст группы (ВАЖНО для классификации):\n'
+    'Сообщение написано в группе "{group_name}". '
+    'Эта группа преимущественно про трафик/арбитраж/аффилиатов '
+    '(историческое распределение: {distribution}, n={total_n}).\n\n'
+    'ПРАВИЛО для этой группы: если человек ищет трафик, аффилиатов, '
+    'медиабайеров, источники трафика, офферы или рекламные каналы — '
+    'это НЕ buyer lead, даже если в сообщении упомянуты платежи или '
+    'финансовые термины. В контексте этой группы упоминание платежей '
+    'чаще всего означает условия оффера (revenue share, CPA и т.д.), '
+    'а не потребность в платёжной инфраструктуре.\n'
+    'Классифицируй как buyer lead ТОЛЬКО если человек ЯВНО ищет PSP, '
+    'процессинг, эквайринг, платёжного провайдера или конкретный '
+    'платёжный метод (P2P, СБП, карточный приём и т.д.).'
+)
+
+_BIO_CONTEXT_TEMPLATE = (
+    'Био пользователя в профиле: "{bio_text}".\n'
+    'Используй эту информацию ТОЛЬКО если в самом сообщении нет явного '
+    'указания на тип деятельности и смысл неоднозначен. Если текст сообщения '
+    'содержит ясный сигнал — полагайся на текст, а не на био.\n\n'
+    'ВАЖНО: тот факт, что био описывает человека как представителя платёжной '
+    'компании/провайдера, НЕ означает, что любое его сообщение — это предложение '
+    'услуг. Провайдеры тоже могут ИСКАТЬ (субпроцессинг, партнёров, недостающие '
+    'методы/гео, замену поставщика и т.д.). Если текст сообщения явно задаёт '
+    'вопрос или ищет что-то — классифицируй по смыслу текста, даже если био '
+    'указывает на provider-роль.'
+)
+
+
+def _build_group_block(group_id: int | None) -> str:
+    """Build group context block for the buyer pipeline prompt."""
+    if not group_id or not _state.group_context or not _state.group_id_to_name:
+        return ""
+    group_name = _state.group_id_to_name.get(str(group_id), "")
+    if not group_name:
+        return ""
+    info = _state.group_context.get(group_name)
+    if not info or info.get("confidence") != "high":
+        return ""
+    dist = info.get("distribution", {})
+    dist_str = ", ".join(f"{k}: {v:.1%}" for k, v in dist.items())
+    traffic_share = dist.get("seeking_traffic", 0) + dist.get("traffic_provider", 0)
+    if traffic_share >= 0.6:
+        return _GROUP_CONTEXT_TRAFFIC_HEAVY.format(
+            group_name=group_name,
+            distribution=dist_str,
+            total_n=info["total_n"],
+        )
+    return _GROUP_CONTEXT_TEMPLATE.format(
+        group_name=group_name,
+        distribution=dist_str,
+        total_n=info["total_n"],
+        confidence=info["confidence"],
+    )
+
+
+async def _fetch_bio(username: str | None, pool: asyncpg.Pool) -> str:
+    """Fetch user bio from PostgreSQL users table. Returns empty string on any failure."""
+    if not username:
+        return ""
+    try:
+        row = await asyncio.wait_for(
+            pool.fetchrow("SELECT bio FROM users WHERE username = $1", username),
+            timeout=0.5,
+        )
+        return (row["bio"] or "") if row else ""
+    except Exception:
+        return ""
 
 
 def _log_startup_config() -> None:
@@ -291,26 +380,71 @@ async def lifespan(app: FastAPI):
     """Initialise heavy resources on startup; release on shutdown."""
     project_root = Path(__file__).parent
 
+    # ── Feature flags (env vars, changeable via restart) ────────────────
+    buyer_prompt_version = os.getenv("BUYER_PROMPT_VERSION", "bp-v3")
+    buyer_gc_enabled = os.getenv("BUYER_GROUP_CONTEXT_ENABLED", "true").lower() == "true"
+    buyer_bio_enabled = os.getenv("BUYER_BIO_CONTEXT_ENABLED", "true").lower() == "true"
+    buyer_rag_path = os.getenv("BUYER_RAG_PATH", str(project_root / "data/rag/chroma"))
+
+    logger.info("[startup] ── BUYER FEATURE FLAGS ──")
+    logger.info("[startup]   BUYER_PROMPT_VERSION=%s", buyer_prompt_version)
+    logger.info("[startup]   BUYER_GROUP_CONTEXT_ENABLED=%s", buyer_gc_enabled)
+    logger.info("[startup]   BUYER_BIO_CONTEXT_ENABLED=%s", buyer_bio_enabled)
+    logger.info("[startup]   BUYER_RAG_PATH=%s", buyer_rag_path)
+
     # ── Buyer pipeline resources ──────────────────────────────────────────
     _state.glossary = load_glossary(
         project_root / "data/output/glossary_primary_sense_only.json"
     )
     rag_cfg = RagConfig(
-        db_path=str(project_root / "data/rag/chroma"),
+        db_path=buyer_rag_path,
         api_key=os.environ["OPENAI_API_KEY"],
     )
     _state.rag_index = RagIndex(rag_cfg)
     if _state.rag_index.count() == 0:
         raise RuntimeError("RAG index is empty — run build-rag first")
-    logger.info("[startup] rag=enabled examples=%d", _state.rag_index.count())
+    logger.info("[startup] rag=enabled path=%s examples=%d", buyer_rag_path, _state.rag_index.count())
 
     _state.llm = LLMClient()
     _state.cfg = LeadExtractionConfig()
-    _state.cfg.lead_definition = BY_VERSION["v5-01-short"]
-    logger.info("[startup] prompt_version=v5-01-short")
+
+    if buyer_prompt_version not in BY_VERSION:
+        raise RuntimeError(f"Unknown BUYER_PROMPT_VERSION={buyer_prompt_version!r}, available: {list(BY_VERSION)}")
+    _state.cfg.lead_definition = BY_VERSION[buyer_prompt_version]
+    logger.info("[startup] prompt_version=%s (len=%d)", buyer_prompt_version, len(_state.cfg.lead_definition))
+
     _state.cfg.pre_filter_db_path = str(project_root / "data/output/glossary.db")
-    _state.judge_system = JUDGE_PROMPTS_BY_VERSION["v2"]
-    logger.info("[startup] judge_version=v2")
+
+    if buyer_prompt_version not in JUDGE_PROMPTS_BY_VERSION:
+        raise RuntimeError(f"No judge for BUYER_PROMPT_VERSION={buyer_prompt_version!r}, available: {list(JUDGE_PROMPTS_BY_VERSION)}")
+    _state.judge_system = JUDGE_PROMPTS_BY_VERSION[buyer_prompt_version]
+    logger.info("[startup] judge_version=%s (len=%d)", buyer_prompt_version, len(_state.judge_system))
+
+    # ── Group context ────────────────────────────────────────────────────
+    if buyer_gc_enabled:
+        gc_path = project_root / "impovements" / "group_context_prior.json"
+        gid_path = project_root / "impovements" / "group_id_to_name.json"
+        if gc_path.exists() and gid_path.exists():
+            with open(gc_path, encoding="utf-8-sig") as f:
+                _state.group_context = json.load(f)
+            with open(gid_path, encoding="utf-8") as f:
+                _state.group_id_to_name = json.load(f)
+            high_conf = sum(1 for v in _state.group_context.values() if v.get("confidence") == "high")
+            logger.info(
+                "[startup] group_context=ON groups=%d high_confidence=%d",
+                len(_state.group_context), high_conf,
+            )
+        else:
+            logger.warning("[startup] group_context=ON but files missing: gc=%s gid=%s", gc_path.exists(), gid_path.exists())
+            _state.group_context = {}
+            _state.group_id_to_name = {}
+    else:
+        _state.group_context = {}
+        _state.group_id_to_name = {}
+        logger.info("[startup] group_context=OFF")
+
+    # ── Bio availability check ───────────────────────────────────────────
+    _state._buyer_bio_enabled = buyer_bio_enabled
 
     # ── Provider pipeline resources ───────────────────────────────────────
     provider_db_path = str(
@@ -358,6 +492,28 @@ async def lifespan(app: FastAPI):
         _state.banned_cache.start_listener(dsn)
     )
     logger.info("[startup] banned_cache ready, listener started")
+
+    # ── Bio availability check (runs after pool is ready) ────────────────
+    if buyer_bio_enabled:
+        try:
+            async with _state.pool.acquire() as conn:
+                users_exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'users')"
+                )
+                if users_exists:
+                    bio_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE bio IS NOT NULL AND bio != ''")
+                    total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+                    logger.info(
+                        "[startup] bio=ON users_table=OK total_users=%d users_with_bio=%d (%.1f%%)",
+                        total_users, bio_count,
+                        (bio_count / total_users * 100) if total_users > 0 else 0,
+                    )
+                else:
+                    logger.warning("[startup] bio=ON but table 'users' NOT FOUND — bio will return empty")
+        except Exception as exc:
+            logger.warning("[startup] bio=ON but check failed: %s — bio will return empty on errors", exc)
+    else:
+        logger.info("[startup] bio=OFF")
 
     logger.info(
         "Startup complete — buyer glossary: %d, provider glossary: %d",
@@ -1022,6 +1178,14 @@ async def classify(body: ClassifyRequest) -> dict:
                 body.message_id,
             )
 
+            # ── Buyer pipeline enrichment (group context + bio) ──────────
+            group_context_block = _build_group_block(body.group_id)
+            bio_block = ""
+            if getattr(_state, "_buyer_bio_enabled", False):
+                bio_text = await _fetch_bio(body.username, _state.pool)
+                if bio_text:
+                    bio_block = _BIO_CONTEXT_TEMPLATE.format(bio_text=bio_text.strip())
+
             # ── Classify all four pipelines in parallel ────────────────────
             _raw = await asyncio.gather(
                 asyncio.to_thread(
@@ -1036,6 +1200,8 @@ async def classify(body: ClassifyRequest) -> dict:
                     context=context,
                     rag_index=_state.rag_index,
                     judge_system=_state.judge_system,
+                    group_context_block=group_context_block,
+                    bio_block=bio_block,
                 ),
                 asyncio.to_thread(
                     classify_provider_message,
