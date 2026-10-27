@@ -46,6 +46,9 @@ from banned_usernames_cache import BannedUsernamesCache
 
 import asyncpg
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from fastapi.openapi.docs import get_swagger_ui_html
