@@ -654,5 +654,6 @@ BY_VERSION: dict[str, str] = {
     "v5-multilang": V5_MULTILANG_LEAD_DEFINITION,
     "v5-short": V5_SHORT_LEAD_DEFINITION,
     "v5-01-short": V5_01_SHORT_LEAD_DEFINITION,
+    "bp-v1": V5_01_SHORT_LEAD_DEFINITION,
     "bp-v3": BP_V3_LEAD_DEFINITION,
 }
