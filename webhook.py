@@ -29,6 +29,8 @@ Migration (run once):
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS company TEXT DEFAULT NULL;
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS traffic_source JSONB DEFAULT NULL;
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS pricing_model   JSONB DEFAULT NULL;
+    ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN DEFAULT NULL;
+    ALTER TABLE client_ready_leads ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN DEFAULT NULL;
 """
 
 from __future__ import annotations
@@ -68,6 +70,7 @@ from glossary_builder.rag import RagIndex, RagConfig
 from glossary_builder.single_classifier import classify_single_message
 from glossary_builder.geo_pipeline import process_geo
 from Deduper.deduplication import is_duplicate
+from merchant_classifier import MerchantGateConfig, classify_merchant
 
 # Provider pipeline imports
 from PSP_providers_glossary_builder.provider_classifier import (
@@ -113,6 +116,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     verdict, judge_reason, company, position,
     pipeline,
     db_write_status, db_write_error,
+    is_merchant,
     classified_at
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
@@ -122,6 +126,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     $18, $19, $20, $21,
     $22,
     $23, $24,
+    $25,
     NOW()
 )
 ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
@@ -147,6 +152,7 @@ ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
     pipeline                  = EXCLUDED.pipeline,
     db_write_status           = EXCLUDED.db_write_status,
     db_write_error            = EXCLUDED.db_write_error,
+    is_merchant               = EXCLUDED.is_merchant,
     classified_at             = NOW()
 RETURNING id;
 """
@@ -183,6 +189,9 @@ class _AppState:
     # Buyer pipeline — group context & bio
     group_context: dict = None       # type: ignore[assignment]
     group_id_to_name: dict = None    # type: ignore[assignment]
+
+    # Merchant gate
+    merchant_gate_cfg: MerchantGateConfig = None  # type: ignore[assignment]
 
     # Shared
     pool: asyncpg.Pool
@@ -568,6 +577,13 @@ async def lifespan(app: FastAPI):
         _state.crypto_cards_cfg.judge_enabled,
     )
 
+    # ── Merchant gate (Haiku classifier, post-judge) ────────────────────
+    _state.merchant_gate_cfg = MerchantGateConfig()
+    logger.info(
+        "[startup] merchant gate ready: model=%s",
+        _state.merchant_gate_cfg.model,
+    )
+
     _log_startup_config()
 
     yield
@@ -723,6 +739,7 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
                 "buyer",  # $22 pipeline
                 "ok",  # $23 db_write_status
                 None,  # $24 db_write_error
+                result.get("is_merchant"),  # $25 is_merchant
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -825,6 +842,7 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                 "provider",
                 "ok",
                 None,
+                None,  # $25 is_merchant (N/A for provider pipeline)
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -1155,6 +1173,7 @@ async def classify(body: ClassifyRequest) -> dict:
                         "dedup",  # $22 pipeline
                         "ok",  # $23 db_write_status
                         None,  # $24 db_write_error
+                        None,  # $25 is_merchant
                     )
                     return
 
@@ -1284,6 +1303,29 @@ async def classify(body: ClassifyRequest) -> dict:
                         body.message_id,
                         (buyer_result.get("rationale") or "")[:100],
                     )
+
+                # ── Merchant gate (post-judge, pre-persist) ──────────────
+                if is_lead and verdict == "REAL_LEAD":
+                    try:
+                        mg_label, _ = await asyncio.to_thread(
+                            classify_merchant,
+                            text=body.text,
+                            username=body.username or "",
+                            group_context_block=group_context_block,
+                            bio_block=bio_block,
+                            config=_state.merchant_gate_cfg,
+                        )
+                        buyer_result["is_merchant"] = mg_label == "direct_merchant"
+                        logger.info(
+                            "[merchant_gate] message_id=%s label=%s is_merchant=%s",
+                            body.message_id, mg_label, buyer_result["is_merchant"],
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "[merchant_gate] FAILED message_id=%s: %s — defaulting to True",
+                            body.message_id, exc,
+                        )
+                        buyer_result["is_merchant"] = True
 
                 # Buyer Persist + Cascades
                 try:

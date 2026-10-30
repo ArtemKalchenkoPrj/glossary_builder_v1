@@ -52,7 +52,8 @@ CREATE TABLE public.client_ready_leads (
     psp_decided_at timestamp with time zone,
     traffic_source jsonb,
     pricing_model jsonb,
-    card_notified_at timestamp with time zone
+    card_notified_at timestamp with time zone,
+    is_merchant boolean
 );
 
 
@@ -121,7 +122,8 @@ CREATE TABLE public.classified_messages_dirty (
     traffic_source jsonb,
     pricing_model jsonb,
     traffic_notified_at timestamp with time zone,
-    traffic_sent_at timestamp with time zone
+    traffic_sent_at timestamp with time zone,
+    is_merchant boolean
 );
 
 
