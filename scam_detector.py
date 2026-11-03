@@ -41,7 +41,10 @@ _MODEL = "openai/gpt-4o-mini"
 # Keyword filter — LLM is called only if at least one keyword is found.
 # ---------------------------------------------------------------------------
 
-_SCAM_KEYWORDS: list[str] = ["скам", "scam", "fraud", "мошен"]
+_SCAM_KEYWORDS: list[str] = [
+    "скам", "scam", "fraud", "мошен",
+    "обнал", "vcc-букинг", "vcc букинг",
+]
 
 
 def _has_scam_keyword(text: str) -> bool:

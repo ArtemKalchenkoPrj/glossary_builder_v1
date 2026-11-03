@@ -1,0 +1,42 @@
+{
+  "_description": "Buyer pipeline anti-filter: messages blocked if they contain a stopword AND no PSP-domain term from the glossary. Validated 2026-11-03.",
+  "_usage": "Substring match, case-insensitive. Blocking requires stopword + absence of PSP signal.",
+
+  "stopwords": [
+    {"term": "арбитраж",       "category": "media_buying", "note": "арбитраж трафика — traffic arbitrage, never PSP"},
+    {"term": "медиабай",       "category": "media_buying", "note": "медиабаинг / media buying"},
+    {"term": "медиа-байер",    "category": "media_buying", "note": "media buyer role"},
+    {"term": "байер",          "category": "media_buying", "note": "buyer = media buyer in traffic context. 0 TP hits"},
+    {"term": "вебмастер",      "category": "media_buying", "note": "webmaster = affiliate in RU traffic jargon"},
+    {"term": "#buying",        "category": "media_buying", "note": "hashtag used in traffic groups for traffic buying requests"},
+    {"term": "media buy",      "category": "media_buying", "note": "media buying (EN)"},
+
+    {"term": "cpl",            "category": "pricing_model", "note": "cost per lead — traffic pricing"},
+    {"term": "cpm",            "category": "pricing_model", "note": "cost per mille — traffic pricing"},
+    {"term": "revshare",       "category": "pricing_model", "note": "revenue share — affiliate model"},
+    {"term": "ревшар",         "category": "pricing_model", "note": "revshare in Russian"},
+    {"term": "rev share",      "category": "pricing_model", "note": "revenue share spaced"},
+
+    {"term": "креатив",        "category": "traffic_tools", "note": "ad creatives"},
+    {"term": "лендинг",        "category": "traffic_tools", "note": "landing page"},
+    {"term": "прелендинг",     "category": "traffic_tools", "note": "pre-landing page"},
+    {"term": "антидетект",     "category": "traffic_tools", "note": "antidetect browser"},
+    {"term": "клоак",          "category": "traffic_tools", "note": "cloaking"},
+
+    {"term": "in-app",         "category": "traffic_source", "note": "in-app traffic"},
+    {"term": "tiktok",         "category": "traffic_source", "note": "TikTok ads"},
+    {"term": "google ads",     "category": "traffic_source", "note": "Google Ads"},
+    {"term": "fb ads",         "category": "traffic_source", "note": "Facebook Ads"},
+    {"term": "facebook ads",   "category": "traffic_source", "note": "Facebook Ads full"},
+    {"term": "реклы",          "category": "traffic_source", "note": "advertisers (рекламодатели) — NOT PSP"},
+    {"term": "реклов",         "category": "traffic_source", "note": "advertisers genitive"},
+    {"term": "рекламодател",   "category": "traffic_source", "note": "advertiser explicit"},
+
+    {"term": "нутра",          "category": "vertical_only", "note": "nutra vertical — traffic only, 0 TP"},
+    {"term": "дейтинг",        "category": "vertical_only", "note": "dating vertical — traffic only, 0 TP"},
+
+    {"term": "обнал",          "category": "scam", "note": "cash-out fraud terminology"},
+    {"term": "vcc-букинг",     "category": "scam", "note": "virtual card booking — fraud scheme"},
+    {"term": "залью",          "category": "scam", "note": "will pour (money) — fraud/obnal jargon. 0 TP as standalone"}
+  ]
+}

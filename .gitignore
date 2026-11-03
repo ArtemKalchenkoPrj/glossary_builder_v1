@@ -45,7 +45,8 @@ wheels/
 /Platform classifier/
 /tests/test_casino_classifier.py
 /tests/
-/data/
+/data/*
+!/data/buyer_stopwords.json
 /.DS_Store/
 /fusion_debug.log
 /playground.ipynb

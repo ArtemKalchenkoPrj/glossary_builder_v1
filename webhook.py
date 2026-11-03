@@ -71,6 +71,7 @@ from glossary_builder.single_classifier import classify_single_message
 from glossary_builder.geo_pipeline import process_geo
 from Deduper.deduplication import is_duplicate
 from merchant_classifier import MerchantGateConfig, classify_merchant
+from buyer_anti_filter import load_stopwords, anti_filter
 
 # Provider pipeline imports
 from PSP_providers_glossary_builder.provider_classifier import (
@@ -192,6 +193,10 @@ class _AppState:
 
     # Merchant gate
     merchant_gate_cfg: MerchantGateConfig = None  # type: ignore[assignment]
+
+    # Buyer anti-filter
+    buyer_stopwords: tuple[str, ...] | None = None
+    buyer_glossary_terms: frozenset[str] | None = None
 
     # Shared
     pool: asyncpg.Pool
@@ -341,6 +346,10 @@ def _log_startup_config() -> None:
         os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic LLM)"),
     )
     logger.info(
+        "  Extractor model: %s",
+        os.environ.get("TRAFFIC_EXTRACTOR_MODEL", "(GLOSSARY_MODEL / nano fallback)"),
+    )
+    logger.info(
         "  Judge model    : %s",
         os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic LLM)"),
     )
@@ -390,16 +399,18 @@ async def lifespan(app: FastAPI):
     project_root = Path(__file__).parent
 
     # ── Feature flags (env vars, changeable via restart) ────────────────
-    buyer_prompt_version = os.getenv("BUYER_PROMPT_VERSION", "bp-v3")
+    buyer_prompt_version = os.getenv("BUYER_PROMPT_VERSION", "bp-v4")
     buyer_gc_enabled = os.getenv("BUYER_GROUP_CONTEXT_ENABLED", "true").lower() == "true"
     buyer_bio_enabled = os.getenv("BUYER_BIO_CONTEXT_ENABLED", "true").lower() == "true"
     buyer_rag_path = os.getenv("BUYER_RAG_PATH", str(project_root / "data/rag/chroma"))
+    buyer_af_enabled = os.getenv("BUYER_ANTI_FILTER_ENABLED", "true").lower() == "true"
 
     logger.info("[startup] ── BUYER FEATURE FLAGS ──")
     logger.info("[startup]   BUYER_PROMPT_VERSION=%s", buyer_prompt_version)
     logger.info("[startup]   BUYER_GROUP_CONTEXT_ENABLED=%s", buyer_gc_enabled)
     logger.info("[startup]   BUYER_BIO_CONTEXT_ENABLED=%s", buyer_bio_enabled)
     logger.info("[startup]   BUYER_RAG_PATH=%s", buyer_rag_path)
+    logger.info("[startup]   BUYER_ANTI_FILTER_ENABLED=%s", buyer_af_enabled)
 
     # ── Buyer pipeline resources ──────────────────────────────────────────
     _state.glossary = load_glossary(
@@ -583,6 +594,21 @@ async def lifespan(app: FastAPI):
         "[startup] merchant gate ready: model=%s",
         _state.merchant_gate_cfg.model,
     )
+
+    # ── Buyer anti-filter (stopwords + glossary double-gate) ─────────────
+    if buyer_af_enabled:
+        stopwords_path = str(project_root / "data" / "buyer_stopwords.json")
+        _state.buyer_stopwords = load_stopwords(stopwords_path)
+        from intent_filter import load_glossary_terms
+        _state.buyer_glossary_terms = load_glossary_terms(_state.cfg.pre_filter_db_path)
+        logger.info(
+            "[startup] buyer anti-filter=ON stopwords=%d glossary_terms=%d",
+            len(_state.buyer_stopwords), len(_state.buyer_glossary_terms),
+        )
+    else:
+        _state.buyer_stopwords = None
+        _state.buyer_glossary_terms = None
+        logger.info("[startup] buyer anti-filter=OFF")
 
     _log_startup_config()
 
@@ -1205,9 +1231,43 @@ async def classify(body: ClassifyRequest) -> dict:
                 if bio_text:
                     bio_block = _BIO_CONTEXT_TEMPLATE.format(bio_text=bio_text.strip())
 
+            # ── Buyer anti-filter (stopword + no PSP term → block) ───────
+            buyer_blocked_by_af = False
+            if _state.buyer_stopwords is not None:
+                buyer_blocked_by_af = anti_filter(
+                    body.text, _state.buyer_stopwords, _state.buyer_glossary_terms,
+                )
+                if buyer_blocked_by_af:
+                    logger.info(
+                        "[buyer] ANTI-FILTER blocked message_id=%s",
+                        body.message_id,
+                    )
+
+            async def _af_blocked_result():
+                return {
+                    "message_id": body.message_id,
+                    "username": body.username,
+                    "timestamp": str(body.timestamp) if body.timestamp else None,
+                    "text": body.text,
+                    "is_lead": False,
+                    "confidence": None,
+                    "lead_type": "none",
+                    "intent": None,
+                    "interest_level": None,
+                    "vertical": [],
+                    "geo": [],
+                    "payment_methods_mentioned": [],
+                    "evidence_quote": None,
+                    "rationale": "[blocked by buyer anti-filter: stopword present, no PSP term]",
+                    "glossary_terms_seen": [],
+                    "elapsed_ms": 0,
+                    "verdict": None,
+                    "judge_reason": None,
+                }
+
             # ── Classify all four pipelines in parallel ────────────────────
             _raw = await asyncio.gather(
-                asyncio.to_thread(
+                _af_blocked_result() if buyer_blocked_by_af else asyncio.to_thread(
                     classify_single_message,
                     text=body.text,
                     glossary=_state.glossary,

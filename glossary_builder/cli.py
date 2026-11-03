@@ -653,11 +653,36 @@ _JUDGE_SYSTEM_BP_V3 = _JUDGE_SYSTEM_V2 + (
     "  Merchant/brand self-ID + payment need → REAL_LEAD.\n"
 )
 
+# bp-v4 judge: stricter on traffic/obnal, group-context-aware
+_JUDGE_SYSTEM_BP_V4 = _JUDGE_SYSTEM_BP_V3 + (
+    "\n\n"
+    "MISTAKE — TRAFFIC/MEDIA BUYING REQUESTS:\n"
+    "  '#buying' / '#traffic' / '#media' hashtags → MISTAKE.\n"
+    "  'direct brand looking for [geo]' WITHOUT payment terms → MISTAKE.\n"
+    "  'looking for MB' (media buyers) → MISTAKE.\n"
+    "  'реклы' / 'рекламодателей' / 'прямой рекл' → MISTAKE (seeking advertisers).\n"
+    "  'офшорный продукт' WITHOUT payment terms → MISTAKE.\n"
+    "\n"
+    "MISTAKE — OBNAL / FRAUD PATTERNS:\n"
+    "  'VCC-букинг' / 'vcc букинг' → MISTAKE (fraud scheme).\n"
+    "  'залью' / 'залить' + volume → MISTAKE (cash-out jargon).\n"
+    "  'обнал' in username or text → MISTAKE.\n"
+    "  'терминал' + MCC code without payment context → MISTAKE.\n"
+    "\n"
+    "GROUP CONTEXT RULES FOR JUDGE:\n"
+    "  If group context says traffic-heavy:\n"
+    "    → Require EXPLICIT payment terms for REAL_LEAD.\n"
+    "    → Vague buyer-intent + geo alone → MISTAKE.\n"
+    "  If no group context:\n"
+    "    → Short vague messages without payment terms → MISTAKE.\n"
+)
+
 JUDGE_PROMPTS_BY_VERSION = {
     "v1": _JUDGE_SYSTEM,
     "v2": _JUDGE_SYSTEM_V2,
     "bp-v1": _JUDGE_SYSTEM_V2,
     "bp-v3": _JUDGE_SYSTEM_BP_V3,
+    "bp-v4": _JUDGE_SYSTEM_BP_V4,
 }
 
 @cli.command(name="judge-leads")
