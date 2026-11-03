@@ -37,6 +37,10 @@
 
     {"term": "обнал",          "category": "scam", "note": "cash-out fraud terminology"},
     {"term": "vcc-букинг",     "category": "scam", "note": "virtual card booking — fraud scheme"},
-    {"term": "залью",          "category": "scam", "note": "will pour (money) — fraud/obnal jargon. 0 TP as standalone"}
+    {"term": "залью",          "category": "scam", "note": "will pour (money) — fraud/obnal jargon. 0 TP as standalone"},
+    {"term": "хайчек",         "category": "scam", "note": "high-check fraud — large unauthorized card charges"},
+    {"term": "бт пдф",         "category": "scam", "note": "bank transfer + fake PDF invoice fraud (RU)"},
+    {"term": "bt pdf",         "category": "scam", "note": "bank transfer + fake PDF invoice fraud (EN)"},
+    {"term": "pdf",            "category": "scam", "note": "PDF invoices — in fraud context (safe: double-gate blocks only without PSP terms)"}
   ]
 }
