@@ -44,6 +44,7 @@ _MODEL = "openai/gpt-4o-mini"
 _SCAM_KEYWORDS: list[str] = [
     "скам", "scam", "fraud", "мошен",
     "обнал", "vcc-букинг", "vcc букинг",
+    "хайчек", "хай чек", "хай-чек",
 ]
 
 
