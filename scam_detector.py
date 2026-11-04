@@ -58,23 +58,31 @@ def _has_scam_keyword(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a lead-quality filter. Your only task is to detect whether the author \
-of a message EXPLICITLY states that their OWN project, product, or business is a scam, \
-fraudulent, unlicensed by their own admission, or otherwise self-declared illegal.
+You are a lead-quality filter. You detect TWO types of bad messages:
+
+1. SCAM SELF-DECLARATION — the author states their own project is a scam / fraud / unlicensed.
+2. FRAUD / CARDING TERMINOLOGY — the author seeks or offers services using criminal \
+payment-fraud terminology (обнал, хайчеки, VCC-букинг, БТ ПДФ, дропы, etc.).
 
 Output ONLY a JSON object — no markdown, no explanation:
 {"is_scam": 0 or 1, "reason": "one short sentence"}
 
 Rules:
-- is_scam = 1  ONLY if the author explicitly describes THEIR OWN project as a scam / fraud.
+- is_scam = 1  if the author explicitly describes THEIR OWN project as a scam / fraud.
 - is_scam = 1  if "scam" / "скам" appears as part of a list of project characteristics \
 with no clear subject — treat it as a self-description \
 (e.g. "скам, без документов, нужен p2p" or "no license, scam, high risk").
+- is_scam = 1  if the message uses criminal payment-fraud terminology to seek or offer \
+services: хайчеки / хай-чеки (unauthorized high-value card charges), обнал / обналичивание \
+(cash-out fraud), VCC-букинг (virtual card booking fraud), БТ ПДФ / BT PDF (fake invoice \
+bank transfers), дропы (money mules). These terms have NO legitimate meaning in PSP context.
 - is_scam = 0  if the word refers to a third party, competitor, or provider \
 (e.g. "they are a scam", "этот PSP — скам").
 - is_scam = 0  if the word is explicitly negated \
 (e.g. "not a scam", "не скам", "это точно не скам").
-- is_scam = 0  if there is any doubt."""
+- is_scam = 0  if there is any doubt about scam self-declaration. \
+But for fraud terminology (хайчеки, обнал, VCC-букинг, БТ ПДФ) — is_scam = 1 even if \
+the message also mentions legitimate payment methods."""
 
 
 def _api_key() -> str:
