@@ -383,20 +383,26 @@ You are screening messages from a Telegram chat about high-risk payments (PSP, a
 Answer YES if the message is from someone BUYING or SEEKING a payment service.
 Answer NO for everything else.
 
+IMPORTANT — "traffic" + payment method names = YES:
+"traffic"/"трафик" combined with payment method names (Bkash, Mpesa, UPI, PIX, \
+Boleto, Gcash, GrabPay, P2P, СБП, C2C, cards, etc.) means the person needs \
+payment processing volume. This is YES even if they say "DM me" or list rates.
+Only answer NO for traffic WITHOUT payment methods ("gambling traffic", "dating traffic").
+
 YES examples:
-- Asking who has/offers X payment solution
 - Looking for PSP/acquirer/payment method
-- "+1" or "same need" replies to payment requests
 - "нужен PSP", "ищу эквайринг", "looking for payment processor"
 - "у кого-то есть X", "есть ли среди нас X" — possession questions
-- "рассматриваю офферы", "рассматриваем варианты" — evaluating options
-- "какие есть решения на рынке" — asking for solutions with implied need
-- "присоединяюсь к запросу" or joining an existing request
+- "+1" or "same need" replies to payment requests
+- "looking for traffic for Bkash, Mpesa" — payment volume, YES
+- "looking for traffic Gcash, GrabPay — Philippines. DM me with rates." — payment volume, YES
+- "need traffic for PIX, Boleto" — payment volume, YES
+- "ищем трафик на UPI/P2P/СБП/C2C" — payment volume, YES
 
 NO examples:
-- Selling or pitching services
+- Selling or pitching services (WITHOUT "looking for" or "need")
 - Reviews/reputation checks ("кто работал с X")
-- Market questions without personal need ("как дела у X?")
+- "looking for gambling traffic" / "looking for dating traffic" — ad traffic, NO
 - Hiring, complaints, general chat
 
 Reply with a single word: YES or NO."""
@@ -539,7 +545,11 @@ class LeadExtractor:
                     max_tokens=10,
                     temperature=0.0,
                 )
-                is_yes = "yes" in _s1.text.strip().lower()
+                _s1_raw = _s1.text.strip()
+                _s1_lower = _s1_raw.lower()
+                is_yes = "yes" in _s1_lower
+                if not is_yes and _s1_raw not in ("NO", "No", "no", "NO.", "No.", "no."):
+                    is_yes = True  # refusal or unexpected output → fail open
             except Exception:  # noqa: BLE001 — never let the screen block extraction
                 is_yes = True  # fail open: defer to the full prompt
             if not is_yes:
