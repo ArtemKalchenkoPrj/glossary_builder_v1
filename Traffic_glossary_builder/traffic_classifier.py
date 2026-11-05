@@ -159,6 +159,18 @@ def _find_glossary_terms(text: str, glossary: list[dict]) -> list[str]:
 # LLM call helpers (synchronous httpx, so the whole function stays sync)
 # ---------------------------------------------------------------------------
 
+_shared_httpx_client: "httpx.Client | None" = None
+
+
+def _get_shared_client() -> "httpx.Client":
+    """Lazy singleton httpx.Client for prompt caching via HTTP keep-alive."""
+    import httpx
+    global _shared_httpx_client
+    if _shared_httpx_client is None:
+        _shared_httpx_client = httpx.Client(timeout=60.0)
+    return _shared_httpx_client
+
+
 def _extract_json(raw: str) -> str:
     """Aggressively extract a JSON object from an LLM response string.
 
@@ -189,8 +201,6 @@ def _call_llm_plain(
     Reads TRAFFIC_OPENROUTER_API_KEY from env.
     Returns "_error" on any failure (caller treats it as fail-open YES).
     """
-    import httpx
-
     _key = os.environ.get("TRAFFIC_OPENROUTER_API_KEY", "")
     if not _key:
         return "_error"
@@ -207,17 +217,17 @@ def _call_llm_plain(
         ],
     }
     try:
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(
-                _OPENROUTER_URL,
-                headers={
-                    "Authorization": f"Bearer {_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+        client = _get_shared_client()
+        resp = client.post(
+            _OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as exc:
         logger.error("traffic_classifier: plain LLM call failed: %s", exc)
         return "_error"
@@ -232,8 +242,6 @@ def _call_llm(
     api_key: Optional[str] = None,
 ) -> dict:
     """Call OpenRouter synchronously, return parsed JSON or {"_error": ...}."""
-    import httpx
-
     _key = api_key or os.environ.get("TRAFFIC_OPENROUTER_API_KEY") or ""
     if not _key:
         # Fallback: try the standard LLM path by raising so caller can use LLMClient
@@ -251,19 +259,19 @@ def _call_llm(
         ],
     }
     try:
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(
-                _OPENROUTER_URL,
-                headers={
-                    "Authorization": f"Bearer {_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"]["content"].strip()
-            clean = _extract_json(raw)
-            return json.loads(clean)
+        client = _get_shared_client()
+        resp = client.post(
+            _OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        clean = _extract_json(raw)
+        return json.loads(clean)
     except json.JSONDecodeError as exc:
         logger.error("traffic_classifier: JSON parse error (model=%s): %s | raw=%r",
                      _model, exc, raw[:300])
@@ -370,7 +378,12 @@ def _run_full_llm(text: str, username: Optional[str], llm: LLMClient,
     # Use httpx directly so TRAFFIC_OPENROUTER_API_KEY is always picked up.
     # _call_llm_via_client(llm) would use the LLMClient's internal SDK key
     # which is set at __init__ time and ignores TRAFFIC_OPENROUTER_API_KEY.
-    return _call_llm(system=system, user=user_msg, max_tokens=600)
+    return _call_llm(
+        system=system,
+        user=user_msg,
+        max_tokens=600,
+        model=os.environ.get("TRAFFIC_EXTRACTOR_MODEL"),
+    )
 
 
 def _run_judge(text: str, username: Optional[str], extractor_result: dict,
