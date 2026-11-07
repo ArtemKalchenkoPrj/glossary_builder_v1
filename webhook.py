@@ -58,6 +58,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import secrets
 
+from vertical_enum import normalize_verticals
 from Casino_platforms_classifier.casino_classifier import run_casino_classifier
 from glossary_builder_crypto_buyers.crypto_buyer_classifier import classify_crypto_buyer_single_message
 from IBAN_classifier.iban_lead_classifier import run_iban_lead_classifier
@@ -751,7 +752,7 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
                 result.get("lead_type") or "none",  # $8
                 result.get("intent"),  # $9
                 result.get("interest_level"),  # $10
-                _jsonb(result.get("vertical") or []),  # $11
+                _jsonb(normalize_verticals(result.get("vertical") or [])),  # $11
                 _jsonb(result.get("geo") or []),  # $12
                 _jsonb(result.get("payment_methods_mentioned") or []),  # $13
                 result.get("evidence_quote"),  # $14
@@ -854,7 +855,7 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                 "psp_provider",
                 None,
                 None,
-                _jsonb(_to_list(result.get("vertical"))),
+                _jsonb(normalize_verticals(_to_list(result.get("vertical")))),
                 _jsonb(geo_processed or geo_list),
                 _jsonb(methods_list),
                 result.get("evidence_quote"),
@@ -1014,7 +1015,7 @@ async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
                 result.get("is_lead", False),                       # $6
                 {"high": 0.9, "medium": 0.6, "low": 0.3}.get(result.get("confidence") or "", None),  # $7
                 lead_type,                                          # $8
-                _jsonb(_to_list(result.get("vertical"))),           # $9
+                _jsonb(normalize_verticals(_to_list(result.get("vertical")))),  # $9
                 _jsonb(geo_processed or geo_list),                  # $10
                 _jsonb(_to_list(result.get("traffic_source"))),     # $11
                 _jsonb(_to_list(result.get("pricing_model"))),      # $12

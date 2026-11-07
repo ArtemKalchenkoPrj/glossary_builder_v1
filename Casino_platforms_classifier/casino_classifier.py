@@ -32,6 +32,7 @@ import asyncpg
 import httpx
 from json_repair import repair_json
 from dotenv import load_dotenv
+from vertical_enum import VERTICAL_RULES as _VERTICAL_RULES, normalize_verticals
 
 logger = logging.getLogger(__name__)
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
@@ -173,7 +174,7 @@ MISTAKE   — это не заказчик: игрок, провайдер, об
   "verdict": "REAL_LEAD" | "MISTAKE",
   "geo": ["целевые страны или регионы автора — или []"],
   "platform": ["названия платформ / CMS / software, которые упоминаются — или []"],
-  "vertical": ["casino" | "betting" | "poker" | "esports" | "crypto" | другое — или []"],
+  "vertical": ["igaming" | "casino" | "betting" | "esports" | "crypto" | "other", ...],
   "notes": "важный контекст одним предложением — или null"
 }
 
@@ -181,7 +182,8 @@ MISTAKE   — это не заказчик: игрок, провайдер, об
 - Если поле неизвестно — [] или null, не придумывай
 - geo, platform, vertical — массивы даже если один элемент
 - Названия оставляй как в тексте, не переводи
-- notes — максимум одно предложение"""
+- notes — максимум одно предложение
+""" + "\n" + _VERTICAL_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +286,7 @@ async def _persist_casino_lead(
             original_text,
             timestamp,
             "seeking_casino_platform",
-            json.dumps(vertical, ensure_ascii=False),
+            json.dumps(normalize_verticals(vertical), ensure_ascii=False),
             json.dumps(geo, ensure_ascii=False),
             json.dumps(platform, ensure_ascii=False),
             "huyochok",

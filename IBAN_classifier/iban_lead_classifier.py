@@ -34,6 +34,7 @@ import re
 from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
+from vertical_enum import VERTICAL_RULES as _VERTICAL_RULES, normalize_verticals
 
 import asyncpg
 import httpx
@@ -308,7 +309,7 @@ Return ONLY valid JSON (no markdown, no explanations):
 {
   "judged_as":        "buyer" | "not_lead" | "unclear",
   "company":          "company name or null",
-  "vertical":         ["iGaming" | "crypto/VASP" | "Adult" | "IT/marketing" | "digital goods" | "other"],
+  "vertical":         ["igaming" | "casino" | "betting" | "forex" | "crypto" | "adult" | "nutra" | "dating" | "trading" | "mlm" | "subscription" | "call_centers" | "resale" | "esports" | "other" | "unknown"],
   "geo":               ["countries or regions mentioned in text, as written, do not normalize"],
   "currencies":       ["list of needed currencies: EUR, GBP, USD, USDT, etc."],
   "current_provider": "provider they are leaving (Wise, Revolut, etc.) or null",
@@ -321,7 +322,8 @@ Rules:
 - Array fields always as arrays, even with a single element
 - Company name as written in the text, do not translate
 - geo — as written in the text, do not normalize or translate
-- notes — max one sentence"""
+- notes — max one sentence
+""" + "\n" + _VERTICAL_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +476,7 @@ async def _persist_iban_lead(
             original_text,
             timestamp,
             "seeking_iban",                                         # lead_type
-            json.dumps(vertical, ensure_ascii=False),              # vertical
+            json.dumps(normalize_verticals(vertical), ensure_ascii=False),  # vertical
             json.dumps(geo, ensure_ascii=False),                  
             json.dumps(currencies, ensure_ascii=False),            # payment_methods_mentioned (currencies here)
             'huyochok',                                                   # approved_by — set later by reviewer

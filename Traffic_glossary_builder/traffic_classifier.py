@@ -367,7 +367,11 @@ def _run_stage1(text: str, username: Optional[str], llm: LLMClient,
 def _run_full_llm(text: str, username: Optional[str], llm: LLMClient,
                   glossary_terms: list[str]) -> dict:
     """Full LLM extraction: returns structured dict with is_lead, lead_type, etc."""
-    system = _TRAFFIC_SYSTEM_TEMPLATE.format(traffic_definition=TRAFFIC_DEFINITION)
+    from vertical_enum import VERTICAL_RULES
+    system = _TRAFFIC_SYSTEM_TEMPLATE.format(
+        traffic_definition=TRAFFIC_DEFINITION,
+        vertical_rules=VERTICAL_RULES,
+    )
     author = username or "unknown"
     terms_hint = (
         f"\n\nГлоссарные термины найдены в тексте: {', '.join(glossary_terms)}"

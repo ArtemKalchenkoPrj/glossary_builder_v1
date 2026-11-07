@@ -434,9 +434,10 @@ class ProviderExtractor:
                 )
 
         # ── Step 3: Full LLM classification ───────────────────────────────────
+        from vertical_enum import VERTICAL_RULES
         system = _PROVIDER_SYSTEM_TEMPLATE.replace(
             "{provider_definition}", cfg.provider_definition
-        )
+        ).replace("{vertical_rules}", VERTICAL_RULES)
 
         # RAG few-shot injection
         few_shot_block = ""
