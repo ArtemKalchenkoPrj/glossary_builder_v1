@@ -31,6 +31,8 @@ Migration (run once):
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS pricing_model   JSONB DEFAULT NULL;
     ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN DEFAULT NULL;
     ALTER TABLE client_ready_leads ADD COLUMN IF NOT EXISTS is_merchant BOOLEAN DEFAULT NULL;
+    ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS certainty TEXT DEFAULT NULL;
+    ALTER TABLE classified_messages_dirty ADD COLUMN IF NOT EXISTS gate_uncertainty_reason TEXT DEFAULT NULL;
 """
 
 from __future__ import annotations
@@ -65,7 +67,7 @@ from IBAN_classifier.iban_lead_classifier import run_iban_lead_classifier
 from glossary_builder.cli import JUDGE_PROMPTS_BY_VERSION
 from glossary_builder.lead_extraction import LeadExtractionConfig, load_glossary
 from glossary_builder.lead_prompt_versions import BY_VERSION
-from glossary_builder.llm import LLMClient
+from glossary_builder.llm import LLMClient, make_anthropic_llm
 from glossary_builder.loader import Message
 from glossary_builder.rag import RagIndex, RagConfig
 from glossary_builder.single_classifier import classify_single_message
@@ -119,6 +121,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     pipeline,
     db_write_status, db_write_error,
     is_merchant,
+    certainty, gate_uncertainty_reason,
     classified_at
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
@@ -129,6 +132,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     $22,
     $23, $24,
     $25,
+    $26, $27,
     NOW()
 )
 ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
@@ -155,6 +159,8 @@ ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
     db_write_status           = EXCLUDED.db_write_status,
     db_write_error            = EXCLUDED.db_write_error,
     is_merchant               = EXCLUDED.is_merchant,
+    certainty                 = EXCLUDED.certainty,
+    gate_uncertainty_reason    = EXCLUDED.gate_uncertainty_reason,
     classified_at             = NOW()
 RETURNING id;
 """
@@ -171,6 +177,8 @@ class _AppState:
     cfg: LeadExtractionConfig
     rag_index: RagIndex
     judge_system: str
+    buyer_stage1_llm: LLMClient | None = None
+    buyer_gate_llm: LLMClient | None = None
 
     # Provider pipeline
     provider_glossary: list[dict]
@@ -405,6 +413,8 @@ async def lifespan(app: FastAPI):
     buyer_bio_enabled = os.getenv("BUYER_BIO_CONTEXT_ENABLED", "true").lower() == "true"
     buyer_rag_path = os.getenv("BUYER_RAG_PATH", str(project_root / "data/rag/chroma"))
     buyer_af_enabled = os.getenv("BUYER_ANTI_FILTER_ENABLED", "true").lower() == "true"
+    buyer_stage1_enabled = os.getenv("BUYER_STAGE1_ENABLED", "true").lower() == "true"
+    buyer_gate_enabled = os.getenv("BUYER_GATE_ENABLED", "true").lower() == "true"
 
     logger.info("[startup] ── BUYER FEATURE FLAGS ──")
     logger.info("[startup]   BUYER_PROMPT_VERSION=%s", buyer_prompt_version)
@@ -412,6 +422,8 @@ async def lifespan(app: FastAPI):
     logger.info("[startup]   BUYER_BIO_CONTEXT_ENABLED=%s", buyer_bio_enabled)
     logger.info("[startup]   BUYER_RAG_PATH=%s", buyer_rag_path)
     logger.info("[startup]   BUYER_ANTI_FILTER_ENABLED=%s", buyer_af_enabled)
+    logger.info("[startup]   BUYER_STAGE1_ENABLED=%s", buyer_stage1_enabled)
+    logger.info("[startup]   BUYER_GATE_ENABLED=%s", buyer_gate_enabled)
 
     # ── Buyer pipeline resources ──────────────────────────────────────────
     _state.glossary = load_glossary(
@@ -440,6 +452,16 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"No judge for BUYER_PROMPT_VERSION={buyer_prompt_version!r}, available: {list(JUDGE_PROMPTS_BY_VERSION)}")
     _state.judge_system = JUDGE_PROMPTS_BY_VERSION[buyer_prompt_version]
     logger.info("[startup] judge_version=%s (len=%d)", buyer_prompt_version, len(_state.judge_system))
+
+    # ── Buyer stage1 + certainty gate (Anthropic haiku) ──────────────────
+    buyer_stage1_model = os.getenv("BUYER_STAGE1_MODEL", "claude-haiku-5-5")
+    buyer_gate_model = os.getenv("BUYER_GATE_MODEL", "claude-haiku-5-5")
+    if buyer_stage1_enabled:
+        _state.buyer_stage1_llm = make_anthropic_llm(buyer_stage1_model)
+        logger.info("[startup] buyer_stage1_llm=%s (Anthropic)", buyer_stage1_model)
+    if buyer_gate_enabled:
+        _state.buyer_gate_llm = make_anthropic_llm(buyer_gate_model)
+        logger.info("[startup] buyer_gate_llm=%s (Anthropic)", buyer_gate_model)
 
     # ── Group context ────────────────────────────────────────────────────
     if buyer_gc_enabled:
@@ -767,6 +789,8 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
                 "ok",  # $23 db_write_status
                 None,  # $24 db_write_error
                 result.get("is_merchant"),  # $25 is_merchant
+                result.get("certainty"),  # $26 certainty
+                result.get("gate_uncertainty_reason"),  # $27 gate_uncertainty_reason
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -870,6 +894,8 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                 "ok",
                 None,
                 None,  # $25 is_merchant (N/A for provider pipeline)
+                None,  # $26 certainty (N/A for provider pipeline)
+                None,  # $27 gate_uncertainty_reason
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -1201,6 +1227,8 @@ async def classify(body: ClassifyRequest) -> dict:
                         "ok",  # $23 db_write_status
                         None,  # $24 db_write_error
                         None,  # $25 is_merchant
+                        None,  # $26 certainty
+                        None,  # $27 gate_uncertainty_reason
                     )
                     return
 
@@ -1264,6 +1292,8 @@ async def classify(body: ClassifyRequest) -> dict:
                     "elapsed_ms": 0,
                     "verdict": None,
                     "judge_reason": None,
+                    "certainty": None,
+                    "gate_uncertainty_reason": None,
                 }
 
             # ── Classify all four pipelines in parallel ────────────────────
@@ -1282,6 +1312,8 @@ async def classify(body: ClassifyRequest) -> dict:
                     judge_system=_state.judge_system,
                     group_context_block=group_context_block,
                     bio_block=bio_block,
+                    stage1_llm=_state.buyer_stage1_llm,
+                    gate_llm=_state.buyer_gate_llm,
                 ),
                 asyncio.to_thread(
                     classify_provider_message,
@@ -1352,11 +1384,12 @@ async def classify(body: ClassifyRequest) -> dict:
                 )
                 if is_lead and verdict != "MISTAKE":
                     logger.info(
-                        "[buyer] LEAD ✓ message_id=%s vertical=%s geo=%s methods=%s",
+                        "[buyer] LEAD ✓ message_id=%s vertical=%s geo=%s methods=%s certainty=%s",
                         body.message_id,
                         buyer_result.get("vertical"),
                         buyer_result.get("geo"),
                         buyer_result.get("payment_methods_mentioned"),
+                        buyer_result.get("certainty"),
                     )
                 else:
                     logger.info(
@@ -1668,6 +1701,8 @@ async def debug() -> dict:
     return {
         "models": {
             "buyer_llm":           _state.llm.model,
+            "buyer_stage1_llm":    _state.buyer_stage1_llm.model if _state.buyer_stage1_llm else None,
+            "buyer_gate_llm":      _state.buyer_gate_llm.model if _state.buyer_gate_llm else None,
             "provider_llm":        _state.provider_llm.model,
             "stage1_model":        os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider_llm)"),
             "judge_model":         os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider_llm)"),

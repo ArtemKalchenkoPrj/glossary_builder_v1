@@ -32,7 +32,7 @@ from datetime import datetime
 from typing import Optional
 
 from .lead_extraction import LeadExtractor, LeadExtractionConfig, LeadDecision
-from .llm import LLMClient
+from .llm import LLMClient, AnthropicLLMClient
 from .loader import Message
 from .cli import _JUDGE_SYSTEM, _JUDGE_USER_TEMPLATE
 from .rag import RagIndex
@@ -132,12 +132,158 @@ logger = logging.getLogger("__name__")
 # ---------------------------------------------------------------------------
 
 
-def _run_judge(decision: LeadDecision, llm: LLMClient, judge_system:str) -> tuple[str, str]:
+_VALID_UNCERTAINTY_REASONS = frozenset({
+    "ambiguous_role", "mixed_psp_and_traffic", "proxy_or_forwarded",
+    "crypto_psp_boundary", "advice_form_real_need", "jargon_reinterpretation",
+    "implicit_vertical", "multi_intent_contains_psp", "partial_override_context",
+})
+
+
+# ---------------------------------------------------------------------------
+# Stage1: micro-LLM binary YES/NO pre-filter (haiku)
+# ---------------------------------------------------------------------------
+
+STAGE1_SYSTEM = """\
+You are screening messages from a Telegram chat about high-risk payments (PSP, acquiring, iGaming, crypto, forex).
+
+Answer YES if the message is from someone BUYING or SEEKING a payment service.
+Answer NO for everything else.
+
+YES — buyer signals:
+- Seeking PSP / acquirer / payment method / payment processor / gateway
+- "нужен PSP", "ищу эквайринг", "looking for payment processor"
+- "ищу решения по [гео]" / "looking for solutions for [country]" / "решение на [гео]" — seeking payment solutions = YES
+- "ищу провайдеров по [гео]" / "looking for providers in [country]" = YES
+- "у кого есть [метод/гео/решение]?" / "есть ли у кого?" — buyer asking who has what = YES
+- "в поиске решений / провайдеров / методов" = YES
+- "+1" or "same need" replies to payment requests
+- Person asks providers to contact them: "напишите в лс", "постучитесь", "велком в лс", "скиньте оффер", "DM me", "write in PM"
+- Person HAS gaming/gambling/forex traffic and needs payment solutions / processing = YES
+  Examples: "gamble traffic, looking for processing", "gaming traffic, need payment solutions", "трафик есть, ищу решения"
+
+NO — clearly not a buyer:
+- Selling / pitching services without asking for anything ("у нас есть X", "предлагаем X", "работаем с X")
+- Reviews / reputation checks ("кто работал с X?", "отзывы о X", "кто использует X?")
+- Person SEEKS ad/media traffic (not payment): "looking for gambling traffic", "looking for dating traffic", "ищу рекламный трафик"
+- Market questions: "ситуация с X", "у всех пропал X?"
+- Hiring, complaints, blacklists, general chat
+
+TRAFFIC RULE — disambiguate carefully:
+- "трафик есть / имеем трафик / high traffic" + "looking for solutions / processing / PSP" = YES (they have traffic, need payment processing)
+- "looking for gambling/gaming/dating traffic" (wants to buy ad traffic) = NO
+
+Reply with a single word: YES or NO."""
+
+
+def _run_stage1(text: str, llm: LLMClient) -> bool:
+    """Return True if stage1 says YES (potential buyer)."""
+    llm.set_stage("buyer_stage1")
+    resp = llm.complete(
+        STAGE1_SYSTEM,
+        text.replace("\n", " ").strip()[:1000],
+        max_tokens=5,
+        temperature=0.0,
+    )
+    return resp.text.strip().upper().startswith("YES")
+
+
+# ---------------------------------------------------------------------------
+# Gate v5: certainty gate (haiku) — runs after judge
+# ---------------------------------------------------------------------------
+
+_GATE_V5_SYSTEM = """\
+You are a quality filter for a PSP (payment service provider) lead classifier.
+
+A previous LLM decided this Telegram message is a REAL_LEAD (someone seeking payment services).
+Your job: verify that the message EXPLICITLY mentions payment infrastructure procurement.
+
+=== CERTAIN — the message directly talks about payment services ===
+The message contains at least one EXPLICIT payment term:
+- "платёжное решение", "платёжная система", "платежка", "платёжку", "платега"
+- "PSP", "payment solution", "payment provider", "payment gateway", "payment processing"
+- "процессинг", "эквайринг", "acquiring", "gateway"
+- "приём платежей", "приём карт", "card processing"
+- specific payment methods as the object of search: "ищу/нужен/в поиске" + SBP/СБП, C2C/С2С, P2P/П2П, NSPK/НСПК, QR, Visa, Mastercard, e-wallet, JazzCash, EasyPaisa, MoMo, Boleto, QRIS, UPI, bank transfer, "выплаты по [method]", "прием по [method]"
+- "мерчант ищет", "мы мерчант, ищем" (merchant self-ID + search)
+
+=== UNCERTAIN — no explicit payment term, only vague signals ===
+The message does NOT contain any explicit payment term from the list above.
+Instead it only has vague words like:
+- "провайдер" / "провайдеры" alone (could be any kind of provider)
+- "решение" / "решения" alone (could be any solution)
+- "приёмка" / "прием" alone without "платежей"/"карт"
+- "обработка" alone (could be data processing, not payments)
+- only traffic/volume terms: "трафик", "объем", "дадим объем"
+- only geo without payment context: "Узбекистан живой", "у кого есть [country]"
+
+Also UNCERTAIN:
+- Message is about traffic/affiliates, not payments
+- Message forwards someone else's need (proxy request)
+- Message only asks a survey question without stating own payment need
+
+=== OUTPUT ===
+Respond with ONLY a JSON object, no other text:
+{"certainty": "CERTAIN" or "UNCERTAIN", "uncertainty_reason": "no_explicit_payment_term" or "traffic_not_payments" or "proxy_request" or "survey_question" or null}
+
+Default to CERTAIN if an explicit payment term is present.
+Default to UNCERTAIN if none is present."""
+
+_GATE_V5_USER = """\
+MESSAGE:
+  @{username}
+  text: {text}
+
+JUDGE VERDICT: {verdict}
+
+Respond with ONLY a JSON object:
+{{"certainty": "CERTAIN" | "UNCERTAIN", "uncertainty_reason": null | "no_explicit_payment_term" | "traffic_not_payments" | "proxy_request" | "survey_question"}}"""
+
+_GATE_V5_VALID_REASONS = frozenset({
+    "no_explicit_payment_term",
+    "traffic_not_payments",
+    "proxy_request",
+    "survey_question",
+})
+
+
+def _run_gate_v5(
+    text: str,
+    username: str,
+    verdict: str,
+    llm: LLMClient,
+) -> tuple[str, str | None]:
+    """Run certainty gate v5. Returns (certainty, reason)."""
+    user_prompt = _GATE_V5_USER.format(
+        username=username or "anon",
+        text=text.replace("\n", " ").strip()[:500],
+        verdict=verdict,
+    )
+    try:
+        llm.set_stage("certainty_gate")
+        data, _ = llm.complete_json(_GATE_V5_SYSTEM, user_prompt, max_tokens=60)
+        certainty = str(data.get("certainty", "CERTAIN")).strip().upper()
+        if certainty not in ("CERTAIN", "UNCERTAIN"):
+            certainty = "CERTAIN"
+        raw = data.get("uncertainty_reason")
+        reason = (
+            str(raw).strip()
+            if isinstance(raw, str) and raw.strip() in _GATE_V5_VALID_REASONS
+            else None
+        )
+        if certainty == "UNCERTAIN" and reason is None:
+            reason = "no_explicit_payment_term"
+        return certainty, reason
+    except Exception as exc:
+        logger.warning("certainty gate failed: %s — defaulting to CERTAIN", exc)
+        return "CERTAIN", None
+
+
+def _run_judge(decision: LeadDecision, llm: LLMClient, judge_system: str) -> tuple[str, str, str | None]:
     """Call the judge LLM for a single lead decision.
 
-    Returns a (verdict, judge_reason) tuple.  verdict is one of
-    "REAL_LEAD", "MISTAKE", or "REVIEW" (fallback when the model returns
-    something unexpected or the call fails entirely).
+    Returns a (verdict, judge_reason, uncertainty_reason) tuple.
+    verdict is one of "REAL_LEAD", "MISTAKE", or "REVIEW".
+    uncertainty_reason is a category ID string or None.
     """
     user_prompt = _JUDGE_USER_TEMPLATE.format(
         message_id=decision.message_id or "?",
@@ -156,27 +302,46 @@ def _run_judge(decision: LeadDecision, llm: LLMClient, judge_system:str) -> tupl
 
     try:
         llm.set_stage("lead_judge")
-        data, _ = llm.complete_json(judge_system, user_prompt, max_tokens=200)
+        data, _ = llm.complete_json(judge_system, user_prompt, max_tokens=250)
         verdict = str(data.get("verdict", "")).strip().upper()
         reason = str(data.get("reason", "")).strip()
+        raw_uncertainty = data.get("uncertainty_reason")
+        uncertainty_reason = (
+            str(raw_uncertainty).strip()
+            if isinstance(raw_uncertainty, str) and raw_uncertainty.strip() in _VALID_UNCERTAINTY_REASONS
+            else None
+        )
         if verdict not in ("REAL_LEAD", "MISTAKE"):
             verdict = "REVIEW"
     except Exception as exc:  # noqa: BLE001
         verdict = "REVIEW"
         reason = f"judge call failed: {exc}"
+        uncertainty_reason = None
 
-    return verdict, reason
+    return verdict, reason, uncertainty_reason
 
 
-def _merge(decision: LeadDecision, verdict: Optional[str], judge_reason: Optional[str]) -> dict:
+def _merge(
+    decision: LeadDecision,
+    verdict: Optional[str],
+    judge_reason: Optional[str],
+    uncertainty_reason: Optional[str] = None,
+    *,
+    certainty: Optional[str] = None,
+    gate_uncertainty_reason: Optional[str] = None,
+) -> dict:
     """Merge extract-stage fields and judge-stage fields into one flat dict.
 
     Fields from both stages are always present.  For messages that did not
-    reach the judge (is_lead=False), verdict and judge_reason are None.
+    reach the judge (is_lead=False), verdict, judge_reason, and
+    uncertainty_reason are None.
     """
     base = decision.to_dict()
     base["verdict"] = verdict
     base["judge_reason"] = judge_reason
+    base["uncertainty_reason"] = uncertainty_reason
+    base["certainty"] = certainty
+    base["gate_uncertainty_reason"] = gate_uncertainty_reason
     return base
 
 
@@ -199,6 +364,8 @@ def classify_single_message(
     judge_system : Optional[str] = None,
     group_context_block: str = "",
     bio_block: str = "",
+    stage1_llm: Optional[LLMClient] = None,
+    gate_llm: Optional[LLMClient] = None,
 ) -> dict:
     """Classify one message through the full extract → judge pipeline.
 
@@ -253,10 +420,12 @@ def classify_single_message(
     extractor = LeadExtractor(glossary, llm, cfg, rag_index=rag_index)
 
     logger.info(
-        "[classify] config prompt_version=%s judge_system_len=%d rag=%s",
-        cfg.lead_definition[:30].replace("\n", " "),  # перші 30 символів промпту
+        "[classify] config prompt_version=%s judge_system_len=%d rag=%s stage1=%s gate=%s",
+        cfg.lead_definition[:30].replace("\n", " "),
         len(judge_system or ""),
         "enabled" if rag_index is not None else "disabled",
+        "enabled" if stage1_llm is not None else "disabled",
+        "enabled" if gate_llm is not None else "disabled",
     )
 
     # extract_one() returns None only when the message is too short or the
@@ -270,9 +439,6 @@ def classify_single_message(
     )
 
     if decision is None:
-        # Message was skipped by the extractor (too short, excluded author,
-        # etc.).  Construct a minimal not-a-lead decision so the caller always
-        # gets a consistent dict shape.
         decision = LeadDecision(
             message_id=message_id,
             timestamp=timestamp.isoformat() if timestamp else None,
@@ -293,16 +459,44 @@ def classify_single_message(
         )
         return _merge(decision, verdict=None, judge_reason=None)
 
-    # Stage 1 complete.  If the extractor decided this is not a lead, skip
-    # the judge entirely — it only makes sense to call it on actual leads.
+    # If the extractor decided this is not a lead, skip remaining stages.
     if not decision.is_lead:
         return _merge(decision, verdict=None, judge_reason=None)
 
-    # Stage 2: independent judge verdict.
+    # ── Stage1: micro-LLM binary pre-filter (haiku) ──────────────────────
+    if stage1_llm is not None:
+        stage1_yes = _run_stage1(text, stage1_llm)
+        if not stage1_yes:
+            logger.info("[buyer] stage1 rejected message_id=%s", message_id)
+            decision.is_lead = False
+            decision.rationale = "[rejected by stage1 micro-LLM]"
+            return _merge(decision, verdict=None, judge_reason=None)
+        logger.info("[buyer] stage1 passed message_id=%s", message_id)
+
+    # ── Judge: independent verdict ────────────────────────────────────────
     judge_model = os.getenv("JUDGE_MODEL")
     if judge_model:
         llm.model = judge_model
 
-    verdict, judge_reason = _run_judge(decision, llm, judge_system)
+    verdict, judge_reason, uncertainty_reason = _run_judge(decision, llm, judge_system)
 
-    return _merge(decision, verdict=verdict, judge_reason=judge_reason)
+    # ── Gate v5: certainty check (haiku) ──────────────────────────────────
+    certainty: str | None = None
+    gate_reason: str | None = None
+    if gate_llm is not None and verdict == "REAL_LEAD":
+        certainty, gate_reason = _run_gate_v5(
+            text, username or "", verdict, gate_llm,
+        )
+        logger.info(
+            "[buyer] gate message_id=%s certainty=%s reason=%s",
+            message_id, certainty, gate_reason,
+        )
+
+    return _merge(
+        decision,
+        verdict=verdict,
+        judge_reason=judge_reason,
+        uncertainty_reason=uncertainty_reason,
+        certainty=certainty,
+        gate_uncertainty_reason=gate_reason,
+    )

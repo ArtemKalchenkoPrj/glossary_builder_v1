@@ -55,6 +55,8 @@ _PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
     "openai/gpt-4.1-mini":     {"input": 0.40, "output":  1.60},
     "openai/gpt-4.1":          {"input": 2.00, "output":  8.00},
     "openai/gpt-4o-mini":      {"input": 0.15, "output":  0.60},
+    # Anthropic (haiku via direct API)
+    "claude-haiku-5-5":        {"input": 0.80, "output":  4.00},
 }
 
 
@@ -396,3 +398,51 @@ def extract_json(text: str) -> Any | None:
         pass
 
     return None
+
+
+# -------- Anthropic-only client (stage1, certainty gate) ----------------------
+
+class AnthropicLLMClient(LLMClient):
+    """LLMClient that always routes to Anthropic API, ignoring env-based provider resolution."""
+
+    def _resolve_provider(self) -> str:
+        return "anthropic"
+
+    def _resolve_model(self) -> str:
+        return self.config.model
+
+    def _build_client(self):
+        try:
+            import anthropic as _anthropic
+        except ImportError as exc:
+            raise LLMConfigError(
+                "anthropic package not installed. Run: pip install -r requirements.txt"
+            ) from exc
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+        return _anthropic.Anthropic(api_key=api_key)
+
+    def _call_anthropic(self, system, user, max_tokens, temperature) -> LLMResponse:
+        create_kwargs: dict = dict(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        if "haiku" in self.model:
+            create_kwargs["thinking"] = {"type": "disabled"}
+        else:
+            create_kwargs["thinking"] = {"type": "between_tools"}
+        resp = self._client.messages.create(**create_kwargs)
+        text = "".join(b.text for b in resp.content if getattr(b, "text", None))
+        usage = {
+            "input_tokens": getattr(resp.usage, "input_tokens", 0),
+            "output_tokens": getattr(resp.usage, "output_tokens", 0),
+        }
+        return LLMResponse(text=text, raw_usage=usage, model=self.model)
+
+
+def make_anthropic_llm(model: str = "claude-haiku-5-5") -> AnthropicLLMClient:
+    """Create an Anthropic-only LLM client pinned to the given model."""
+    client = AnthropicLLMClient(config=LLMConfig(model=model))
+    client.model = model
+    return client

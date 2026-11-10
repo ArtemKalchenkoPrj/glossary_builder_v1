@@ -40,6 +40,8 @@
     {"term": "залью",          "category": "scam", "note": "will pour (money) — fraud/obnal jargon. 0 TP as standalone"},
     {"term": "хайчек",         "category": "scam", "note": "high-check fraud — large unauthorized card charges"},
     {"term": "бт пдф",         "category": "scam", "note": "bank transfer + fake PDF invoice fraud (RU)"},
+    {"term": "бт без чека",    "category": "scam", "note": "bank transfer without receipt — fraud/obnal scheme. 0 TP (mobius_ceo pattern)"},
+    {"term": "бт чеки",        "category": "scam", "note": "bank transfer + receipts framing — fraud-adjacent template posts (mobius_ceo)"},
     {"term": "bt pdf",         "category": "scam", "note": "bank transfer + fake PDF invoice fraud (EN)"},
     {"term": "pdf",            "category": "scam", "note": "PDF invoices — in fraud context (safe: double-gate blocks only without PSP terms)"}
   ]
