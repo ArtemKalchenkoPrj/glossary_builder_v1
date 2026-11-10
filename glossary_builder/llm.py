@@ -402,8 +402,24 @@ def extract_json(text: str) -> Any | None:
 
 # -------- Anthropic-only client (stage1, certainty gate) ----------------------
 
+_ANTHROPIC_TO_OPENROUTER: dict[str, str] = {
+    "claude-haiku-5-5": "anthropic/claude-haiku-5.5",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
+}
+
+_logger = __import__("logging").getLogger(__name__)
+
+
 class AnthropicLLMClient(LLMClient):
-    """LLMClient that always routes to Anthropic API, ignoring env-based provider resolution."""
+    """LLMClient that always routes to Anthropic API, ignoring env-based provider resolution.
+
+    On spend-limit (400) or rate-limit (429) errors, automatically falls back
+    to the same model on OpenRouter.
+    """
+
+    def __init__(self, config: LLMConfig | None = None):
+        super().__init__(config)
+        self._fallback_active = False
 
     def _resolve_provider(self) -> str:
         return "anthropic"
@@ -421,7 +437,19 @@ class AnthropicLLMClient(LLMClient):
         api_key = os.environ.get("ANTHROPIC_API_KEY") or ""
         return _anthropic.Anthropic(api_key=api_key)
 
+    def _build_openrouter_client(self):
+        from openai import OpenAI
+        return OpenAI(
+            api_key=os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY") or "",
+            base_url=os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+        )
+
     def _call_anthropic(self, system, user, max_tokens, temperature) -> LLMResponse:
+        if self._fallback_active:
+            return self._call_openrouter_fallback(system, user, max_tokens, temperature)
+
+        import anthropic as _anthropic
+
         create_kwargs: dict = dict(
             model=self.model,
             max_tokens=max_tokens,
@@ -432,13 +460,45 @@ class AnthropicLLMClient(LLMClient):
             create_kwargs["thinking"] = {"type": "disabled"}
         else:
             create_kwargs["thinking"] = {"type": "between_tools"}
-        resp = self._client.messages.create(**create_kwargs)
+
+        try:
+            resp = self._client.messages.create(**create_kwargs)
+        except (_anthropic.BadRequestError, _anthropic.RateLimitError) as exc:
+            _logger.warning(
+                "Anthropic API limit hit (%s %s): switching to OpenRouter fallback",
+                type(exc).__name__, getattr(exc, "status_code", "?"),
+            )
+            self._fallback_active = True
+            return self._call_openrouter_fallback(system, user, max_tokens, temperature)
+
         text = "".join(b.text for b in resp.content if getattr(b, "text", None))
         usage = {
             "input_tokens": getattr(resp.usage, "input_tokens", 0),
             "output_tokens": getattr(resp.usage, "output_tokens", 0),
         }
         return LLMResponse(text=text, raw_usage=usage, model=self.model)
+
+    def _call_openrouter_fallback(self, system, user, max_tokens, temperature) -> LLMResponse:
+        or_model = _ANTHROPIC_TO_OPENROUTER.get(self.model, f"anthropic/{self.model}")
+        if not hasattr(self._local, "or_client"):
+            self._local.or_client = self._build_openrouter_client()
+        resp = self._local.or_client.chat.completions.create(
+            model=or_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        text = resp.choices[0].message.content or ""
+        usage_obj = getattr(resp, "usage", None)
+        usage = {
+            "input_tokens": getattr(usage_obj, "prompt_tokens", 0) if usage_obj else 0,
+            "output_tokens": getattr(usage_obj, "completion_tokens", 0) if usage_obj else 0,
+        }
+        _logger.info("OpenRouter fallback OK: model=%s", or_model)
+        return LLMResponse(text=text, raw_usage=usage, model=or_model)
 
 
 def make_anthropic_llm(model: str = "claude-haiku-5-5") -> AnthropicLLMClient:
