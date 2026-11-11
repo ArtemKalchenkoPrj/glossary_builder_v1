@@ -25,7 +25,7 @@ glossary_builder_v1/
 │   ├── single_classifier.py            #   Runtime: классификатор одного сообщения (extract → judge)
 │   ├── lead_extraction.py              #   Runtime: LeadExtractor, LeadDecision, glossary-injected RAG
 │   ├── lead_prompt_versions.py         #   Runtime: версии промптов для lead extraction
-│   ├── geo_pipeline.py                 #   Runtime: нормализация/расширение гео после классификации
+│   ├── signal_normalizer.py            #   Runtime: нормализация гео и платёжных методов после классификации
 │   ├── llm.py                          #   Shared: LLM-клиент (Anthropic / OpenAI / OpenRouter)
 │   ├── config.py                       #   Shared: конфиги (LLMConfig, PipelineConfig, CandidateConfig)
 │   ├── loader.py                       #   Shared: Message dataclass, загрузка данных

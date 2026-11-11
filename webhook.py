@@ -71,7 +71,7 @@ from glossary_builder.llm import LLMClient, make_anthropic_llm
 from glossary_builder.loader import Message
 from glossary_builder.rag import RagIndex, RagConfig
 from glossary_builder.single_classifier import classify_single_message
-from glossary_builder.geo_pipeline import process_geo
+from glossary_builder.signal_normalizer import process_geo
 from Deduper.deduplication import is_duplicate
 from merchant_classifier import MerchantGateConfig, classify_merchant
 from buyer_anti_filter import load_stopwords, anti_filter
@@ -756,7 +756,7 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
     """Write buyer classification result to PostgreSQL."""
     try:
         async with _state.pool.acquire() as conn:
-            result["geo"] = await process_geo(
+            result["geo"], result["payment_methods_mentioned"] = await process_geo(
                 message_id=result.get("message_id"),
                 raw_geo_list=result.get("geo") or [],
                 payment_methods=result.get("payment_methods_mentioned") or [],
@@ -860,7 +860,7 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
             geo_list = _to_list(result.get("geo"))
             methods_list = _to_list(result.get("methods"))
 
-            geo_processed = await process_geo(
+            geo_processed, known_methods = await process_geo(
                 message_id=result.get("message_id"),
                 raw_geo_list=geo_list,
                 payment_methods=methods_list,
@@ -881,7 +881,7 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                 None,
                 _jsonb(normalize_verticals(_to_list(result.get("vertical")))),
                 _jsonb(geo_processed or geo_list),
-                _jsonb(methods_list),
+                _jsonb(known_methods),
                 result.get("evidence_quote"),
                 result.get("rationale"),
                 _jsonb(_to_list(result.get("glossary_terms_seen"))),
@@ -1023,7 +1023,7 @@ async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
 
             # ── Geo normalisation ─────────────────────────────────────────────
             geo_list = _to_list(result.get("geo"))
-            geo_processed = await process_geo(
+            geo_processed, _ = await process_geo(
                 message_id=result.get("message_id"),
                 raw_geo_list=geo_list,
                 payment_methods=[],

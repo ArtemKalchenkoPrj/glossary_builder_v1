@@ -227,7 +227,7 @@ CREATE TABLE banned_usernames (
 
 ### Geo-таблицы
 
-Используются [geo_pipeline.py](../glossary_builder/geo_pipeline.py) для
+Используются [signal_normalizer.py](../glossary_builder/signal_normalizer.py) для
 нормализации и расширения гео-кодов.
 
 ```sql
@@ -260,7 +260,7 @@ CREATE TABLE geo_unknown_values (
 
 ### Payment-таблицы
 
-Используются geo_pipeline (Stage 5) для инференса гео из платёжных методов.
+Используются signal_normalizer (Stage 5) для инференса гео из платёжных методов.
 
 ```sql
 -- Справочник платёжных методов с иерархией и локальной привязкой к гео.
@@ -330,7 +330,7 @@ Buyer-пайплайн **не выполняет** cross-user dedup — он п�
 
 ## Geo pipeline
 
-**Файл:** [glossary_builder/geo_pipeline.py](../glossary_builder/geo_pipeline.py)
+**Файл:** [glossary_builder/signal_normalizer.py](../glossary_builder/signal_normalizer.py)
 
 Запускается внутри persist-функций (buyer, provider, traffic) после classification,
 перед записью в БД. Заменяет `result["geo"]` обработанным списком.

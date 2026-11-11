@@ -95,7 +95,7 @@ def _llm_resolve_geo(raw: str, valid_codes: set[str]) -> str:
         candidate_upper = candidate.upper()
         if candidate_upper in valid_codes:
             logger.info(
-                "geo_pipeline: LLM resolved %r -> %r",
+                "signal_normalizer: LLM resolved %r -> %r",
                 raw, candidate_upper,
             )
             return candidate_upper
@@ -106,14 +106,14 @@ def _llm_resolve_geo(raw: str, valid_codes: set[str]) -> str:
 
         # Anything else (hallucinated code, multi-word response, etc.) → garbage.
         logger.warning(
-            "geo_pipeline: LLM returned unrecognised value %r for raw=%r — treating as garbage",
+            "signal_normalizer: LLM returned unrecognised value %r for raw=%r — treating as garbage",
             candidate, raw,
         )
         return "garbage"
 
     except LLMError as exc:
         logger.error(
-            "geo_pipeline: LLM resolve failed for raw=%r: %s — treating as garbage",
+            "signal_normalizer: LLM resolve failed for raw=%r: %s — treating as garbage",
             raw, exc,
         )
         return "garbage"
@@ -197,7 +197,7 @@ async def normalize_geo(
 
         # ---- Stage 3.5: LLM fallback ----
         logger.warning(
-            "geo_pipeline: unknown geo value %r in message_id=%s — attempting LLM resolution",
+            "signal_normalizer: unknown geo value %r in message_id=%s — attempting LLM resolution",
             raw, message_id,
         )
 
@@ -220,7 +220,7 @@ async def normalize_geo(
             normalized.append(resolved)
         else:
             logger.warning(
-                "geo_pipeline: LLM could not resolve %r in message_id=%s — "
+                "signal_normalizer: LLM could not resolve %r in message_id=%s — "
                 "logged to geo_unknown_values",
                 raw, message_id,
             )
@@ -336,24 +336,35 @@ async def log_unknown_payment_methods(
     payment_methods: list[str],
     message_id: Optional[int],
     conn: asyncpg.Connection,
-) -> None:
-    """Log payment methods that don't match any alias in payment_options."""
-    if not payment_methods or message_id is None:
-        return
+) -> list[str]:
+    """Normalize payment methods against payment_options.aliases.
 
-    unknown = []
+    Returns only methods that matched a known alias (as their canonical token).
+    Unknown methods are logged to payment_unknown_values and dropped.
+    """
+    if not payment_methods:
+        return []
+
+    known: list[str] = []
+    unknown: list[tuple[str, Optional[int]]] = []
+
     for method in payment_methods:
         key = method.strip().lower()
         row = await conn.fetchrow(
-            "SELECT 1 FROM payment_options WHERE $1 = ANY(aliases)",
+            "SELECT token FROM payment_options WHERE $1 = ANY(aliases)",
             key,
         )
-        if row is None:
-            unknown.append((method, message_id))
+        if row is not None:
+            token = row["token"]
+            if token not in known:
+                known.append(token)
+        else:
             logger.warning(
-                "geo_pipeline: unknown payment method %r in message_id=%s",
+                "signal_normalizer: unknown payment method %r in message_id=%s",
                 method, message_id,
             )
+            if message_id is not None:
+                unknown.append((method, message_id))
 
     if unknown:
         await conn.executemany(
@@ -365,6 +376,8 @@ async def log_unknown_payment_methods(
             unknown,
         )
 
+    return known
+
 
 # ---------------------------------------------------------------------------
 # Stage 7 — main entry point
@@ -375,33 +388,16 @@ async def process_geo(
     raw_geo_list: list[str],
     payment_methods: list[str],
     conn: asyncpg.Connection,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Run the full geo pipeline for one message.
 
-    Steps:
-        1. Load norm_map, expansion_map, local_method_map from the DB.
-        2. Normalize each raw value (lowercase + strip).  [inside normalize_geo]
-        3. Map to canonical codes; unknown values go through LLM fallback (3.5)
-           before being logged to geo_unknown_values.
-        4. Expand canonical codes using expansion_map.
-        5. Append geo codes implied by LOCAL payment_methods, deduplicated.
-        6. Log payment methods not found in any payment_options.aliases.
-
-    Args:
-        message_id:      ID of the message; forwarded to normalize_geo for logging.
-        raw_geo_list:    Raw geo list from the classifier, e.g. ["KZ", "Росія", "EU"].
-        payment_methods: Payment methods from the classifier,
-                         e.g. ["visa", "монобанк"]. Pass [] if none.
-        conn:            Active asyncpg connection (caller owns the lifecycle).
-
     Returns:
-        Processed geo list ready for the downstream filter step,
-        e.g. ["KZ", "RU", "EU", "AT", "BE", "PL", ..., "UA"].
-        Returns an empty list if both raw_geo_list and payment_methods
-        are empty/None.
+        (geo, known_payment_methods) — geo list ready for downstream,
+        and payment methods filtered to canonical tokens from payment_options.
+        Unknown methods are dropped and logged to payment_unknown_values.
     """
     if not raw_geo_list and not payment_methods:
-        return []
+        return [], []
 
     # Stage 1 — load mappings fresh from DB on every call.
     norm_map, expansion_map = await load_maps(conn)
@@ -414,9 +410,9 @@ async def process_geo(
     expanded = expand_geo(canonical, expansion_map)
 
     # Stage 5 — derive extra geo from LOCAL payment methods.
-    result = await apply_payment_geo(expanded, payment_methods or [], local_method_map)
+    geo_result = await apply_payment_geo(expanded, payment_methods or [], local_method_map)
 
-    # Stage 6 — log unknown payment methods.
-    await log_unknown_payment_methods(payment_methods or [], message_id, conn)
+    # Stage 6 — normalize payment methods; unknown values logged and dropped.
+    known_methods = await log_unknown_payment_methods(payment_methods or [], message_id, conn)
 
-    return result
+    return geo_result, known_methods

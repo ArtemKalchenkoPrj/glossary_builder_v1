@@ -37,7 +37,6 @@ from .fusion import FusionConfig, FusionExtractor
 from .llm import LLMClient
 from .loader import Message
 from .rag import RagConfig, RagIndex, format_few_shot
-
 import logging
 logger = logging.getLogger(__name__)
 

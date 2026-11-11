@@ -93,7 +93,7 @@ DB target: `client_ready_leads` (bypasses classified_messages_dirty)
 
 ## Post-classification: Geo pipeline
 
-`glossary_builder/geo_pipeline.py` — runs after extraction, before DB write:
+`glossary_builder/signal_normalizer.py` — runs after extraction, before DB write:
 normalize → LLM resolve unknowns → expand regions → infer geo from payment methods
 
 ## Database
