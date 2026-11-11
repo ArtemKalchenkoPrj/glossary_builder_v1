@@ -18,6 +18,44 @@ from glossary_builder.config import LLMConfig
 
 logger = logging.getLogger(__name__)
 
+# Fast keyword pre-filter: if any of these appear in the text → aggregator, no LLM call needed.
+_AGGREGATOR_KEYWORDS = [
+    # English
+    "aggregator",
+    "facilitator",
+    "sub-acquirer",
+    "subacquirer",
+    "looking for merchants",
+    # Russian/Ukrainian transliterations of sub-acquirer
+    "субэквайер",
+    "суб-эквайер",
+    "субеквайєр",
+    "суб-еквайєр",
+    # traffic acquisition (aggregator buys merchant traffic)
+    "ищем трафик",
+    "ищу трафик",
+    "ищу траффик",
+    # payment agents / intermediary supply
+    "нужны платежные агенты",
+    # offering processing (provider/aggregator side)
+    "предлагаем процессинг",
+    "даю приемку",
+    "есть приемка",
+    "предлагаем приемку",
+    "предоставляем приемку",
+    # залив/пролив acquisition (aggregator buying card-fraud flows)
+    "ищем залив",
+    "ищем пролив",
+    "ищу залив",
+    "ищу пролив",
+    # продукты (aggregator acquiring merchant products)
+    "ищем продукты",
+    "ищу продукты",
+    # площадка needed (aggregator looking for a platform, not a provider)
+    "нужна площадка",
+    "нужна плошадка",  # common typo
+]
+
 _MERCHANT_GATE_SYSTEM = """\
 Ты классификатор сообщений из Telegram-чатов iGaming/high-risk индустрии.
 
@@ -125,6 +163,13 @@ def classify_merchant(
         (label, rationale) — rationale is always empty in production (no rationale mode).
     """
     cfg = config or MerchantGateConfig()
+
+    # Fast path: keyword hit → aggregator without LLM call.
+    text_lower = text.lower()
+    for kw in _AGGREGATOR_KEYWORDS:
+        if kw in text_lower:
+            logger.info("merchant_gate: keyword hit %r → aggregator", kw)
+            return "aggregator", ""
 
     if llm is None:
         llm_cfg = LLMConfig(
