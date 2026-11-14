@@ -1,0 +1,387 @@
+﻿{
+  "Affhub community chat 💬🇺🇦": {
+    "distribution": {
+      "seeking_traffic": 0.8651,
+      "traffic_provider": 0.1107,
+      "seeking_psp": 0.0208,
+      "psp_provider": 0.0035
+    },
+    "total_n": 289,
+    "confidence": "high"
+  },
+  "Forex World 💱 (Affiliate Marketing, Vacansies, CRM and platforms)": {
+    "distribution": {
+      "traffic_provider": 0.6387,
+      "seeking_traffic": 0.2932,
+      "psp_provider": 0.0628,
+      "seeking_psp": 0.0052
+    },
+    "total_n": 191,
+    "confidence": "high"
+  },
+  "Royal Affiliates 👑 FX, Crypto, Finance": {
+    "distribution": {
+      "traffic_provider": 0.5433,
+      "seeking_traffic": 0.2205,
+      "psp_provider": 0.1339,
+      "seeking_psp": 0.0945,
+      "seeking_processing": 0.0079
+    },
+    "total_n": 127,
+    "confidence": "high"
+  },
+  "High-Risk Forum": {
+    "distribution": {
+      "seeking_psp": 0.5417,
+      "seeking_traffic": 0.3438,
+      "psp_provider": 0.0833,
+      "traffic_provider": 0.0312
+    },
+    "total_n": 96,
+    "confidence": "high"
+  },
+  "SiGMA World 2026, Rome": {
+    "distribution": {
+      "seeking_traffic": 0.3222,
+      "psp_provider": 0.3,
+      "traffic_provider": 0.2111,
+      "seeking_psp": 0.1667
+    },
+    "total_n": 90,
+    "confidence": "high"
+  },
+  "👨‍⚖️ PSP JUDGES": {
+    "distribution": {
+      "seeking_psp": 0.8588,
+      "psp_provider": 0.1294,
+      "seeking_traffic": 0.0118
+    },
+    "total_n": 85,
+    "confidence": "high"
+  },
+  "GGC GLOBAL GAME CONNECT": {
+    "distribution": {
+      "psp_provider": 0.5526,
+      "seeking_psp": 0.25,
+      "seeking_traffic": 0.1184,
+      "traffic_provider": 0.0789
+    },
+    "total_n": 76,
+    "confidence": "high"
+  },
+  "Crypto|Traffic|Arbitration√Чат": {
+    "distribution": {
+      "seeking_traffic": 0.4595,
+      "traffic_provider": 0.3243,
+      "psp_provider": 0.1351,
+      "seeking_psp": 0.0811
+    },
+    "total_n": 37,
+    "confidence": "high"
+  },
+  "🌐 RICOCHET_TRAFFIC🌐 Общение на тему арбитража трафика": {
+    "distribution": {
+      "psp_provider": 0.3636,
+      "seeking_traffic": 0.3636,
+      "traffic_provider": 0.2121,
+      "seeking_psp": 0.0606
+    },
+    "total_n": 33,
+    "confidence": "high"
+  },
+  "Affiliate Crypto Conference 2021": {
+    "distribution": {
+      "traffic_provider": 0.6786,
+      "psp_provider": 0.1429,
+      "seeking_traffic": 0.1071,
+      "seeking_psp": 0.0714
+    },
+    "total_n": 28,
+    "confidence": "high"
+  },
+  "[CONVERSION EVENTS AND CONFS]": {
+    "distribution": {
+      "seeking_traffic": 0.72,
+      "traffic_provider": 0.2,
+      "psp_provider": 0.04,
+      "seeking_psp": 0.04
+    },
+    "total_n": 25,
+    "confidence": "high"
+  },
+  "AffPapa Chat - iGaming Club": {
+    "distribution": {
+      "seeking_traffic": 0.56,
+      "traffic_provider": 0.32,
+      "psp_provider": 0.08,
+      "seeking_psp": 0.04
+    },
+    "total_n": 25,
+    "confidence": "high"
+  },
+  "SBC | SBC Conference | 2026": {
+    "distribution": {
+      "psp_provider": 0.4211,
+      "seeking_psp": 0.3684,
+      "seeking_traffic": 0.1579,
+      "traffic_provider": 0.0526
+    },
+    "total_n": 19,
+    "confidence": "low"
+  },
+  "Marketing Freelance Arbitrage Traffic": {
+    "distribution": {
+      "seeking_traffic": 0.3684,
+      "psp_provider": 0.3158,
+      "traffic_provider": 0.3158
+    },
+    "total_n": 19,
+    "confidence": "low"
+  },
+  "Bigo ADS Affiliate Marketing Chat": {
+    "distribution": {
+      "traffic_provider": 0.8421,
+      "seeking_traffic": 0.1053,
+      "seeking_psp": 0.0526
+    },
+    "total_n": 19,
+    "confidence": "low"
+  },
+  "Huidu.io Global iGaming🎰【GGC2027】": {
+    "distribution": {
+      "psp_provider": 0.5556,
+      "traffic_provider": 0.3333,
+      "seeking_traffic": 0.0556,
+      "seeking_psp": 0.0556
+    },
+    "total_n": 18,
+    "confidence": "low"
+  },
+  "Paradigma Traders": {
+    "distribution": {
+      "seeking_psp": 0.3333,
+      "seeking_traffic": 0.2778,
+      "psp_provider": 0.2222,
+      "traffic_provider": 0.1667
+    },
+    "total_n": 18,
+    "confidence": "low"
+  },
+  "huidu.in |Gaming 🇮🇳【GGC2027】": {
+    "distribution": {
+      "psp_provider": 0.4444,
+      "seeking_psp": 0.2778,
+      "traffic_provider": 0.1667,
+      "seeking_traffic": 0.1111
+    },
+    "total_n": 18,
+    "confidence": "low"
+  },
+  "Satoshkin.Network": {
+    "distribution": {
+      "seeking_psp": 0.8824,
+      "seeking_traffic": 0.1176
+    },
+    "total_n": 17,
+    "confidence": "low"
+  },
+  "911 Processing Forum": {
+    "distribution": {
+      "seeking_psp": 0.75,
+      "psp_provider": 0.125,
+      "traffic_provider": 0.0625,
+      "seeking_traffic": 0.0625
+    },
+    "total_n": 16,
+    "confidence": "low"
+  },
+  "🚷Private Gambling Community🎩 | GURO": {
+    "distribution": {
+      "seeking_psp": 0.4,
+      "seeking_traffic": 0.3333,
+      "psp_provider": 0.1333,
+      "traffic_provider": 0.1333
+    },
+    "total_n": 15,
+    "confidence": "low"
+  },
+  "G GATE CHAT": {
+    "distribution": {
+      "seeking_psp": 0.8,
+      "seeking_traffic": 0.2
+    },
+    "total_n": 15,
+    "confidence": "low"
+  },
+  "AffPapa Conference Cancun Nov 23-25th": {
+    "distribution": {
+      "seeking_traffic": 0.5,
+      "traffic_provider": 0.4167,
+      "psp_provider": 0.0833
+    },
+    "total_n": 12,
+    "confidence": "low"
+  },
+  "Syndicate Forum": {
+    "distribution": {
+      "seeking_psp": 0.6364,
+      "traffic_provider": 0.1818,
+      "psp_provider": 0.0909,
+      "seeking_traffic": 0.0909
+    },
+    "total_n": 11,
+    "confidence": "low"
+  },
+  "Aff Events Chat. Next: Sigma Rome": {
+    "distribution": {
+      "seeking_traffic": 0.6364,
+      "traffic_provider": 0.2727,
+      "seeking_psp": 0.0909
+    },
+    "total_n": 11,
+    "confidence": "low"
+  },
+  "BROCONF-7 ½ | Official Chat": {
+    "distribution": {
+      "seeking_traffic": 0.7778,
+      "traffic_provider": 0.2222
+    },
+    "total_n": 9,
+    "confidence": "low"
+  },
+  "Affiliate Marketing Chat": {
+    "distribution": {
+      "seeking_traffic": 0.75,
+      "traffic_provider": 0.25
+    },
+    "total_n": 8,
+    "confidence": "low"
+  },
+  "Чат медиабайеров | Арбитраж Трафика": {
+    "distribution": {
+      "seeking_traffic": 0.625,
+      "traffic_provider": 0.25,
+      "seeking_psp": 0.125
+    },
+    "total_n": 8,
+    "confidence": "low"
+  },
+  "Traffic_Boss][CPA√Чат": {
+    "distribution": {
+      "seeking_traffic": 0.7143,
+      "traffic_provider": 0.2857
+    },
+    "total_n": 7,
+    "confidence": "low"
+  },
+  "Affiliate комьюнити | Тут про Арбитраж": {
+    "distribution": {
+      "seeking_traffic": 0.6667,
+      "psp_provider": 0.1667,
+      "traffic_provider": 0.1667
+    },
+    "total_n": 6,
+    "confidence": "low"
+  },
+  "Affiliate marketing Lisbon 🇺🇦 + Portugal": {
+    "distribution": {
+      "traffic_provider": 0.8,
+      "seeking_traffic": 0.2
+    },
+    "total_n": 5,
+    "confidence": "low"
+  },
+  "GAMBLING | ЧАТ": {
+    "distribution": {
+      "seeking_traffic": 0.75,
+      "psp_provider": 0.25
+    },
+    "total_n": 4,
+    "confidence": "low"
+  },
+  "FB-killers | Чат арбитражников": {
+    "distribution": {
+      "seeking_traffic": 0.75,
+      "traffic_provider": 0.25
+    },
+    "total_n": 4,
+    "confidence": "low"
+  },
+  "X - OTC Forum": {
+    "distribution": {
+      "seeking_traffic": 0.75,
+      "seeking_psp": 0.25
+    },
+    "total_n": 4,
+    "confidence": "low"
+  },
+  "Вакансии | Арбитраж Трафика": {
+    "distribution": {
+      "traffic_provider": 0.3333,
+      "seeking_psp": 0.3333,
+      "seeking_traffic": 0.3333
+    },
+    "total_n": 3,
+    "confidence": "low"
+  },
+  "GAMBLING ЧАТ l SEO ЧАТ": {
+    "distribution": {
+      "psp_provider": 0.6667,
+      "traffic_provider": 0.3333
+    },
+    "total_n": 3,
+    "confidence": "low"
+  },
+  "MAC Yerevan '26": {
+    "distribution": {
+      "seeking_psp": 0.6667,
+      "seeking_traffic": 0.3333
+    },
+    "total_n": 3,
+    "confidence": "low"
+  },
+  "🏴 PSP Founders 2.0": {
+    "distribution": {
+      "seeking_psp": 0.5,
+      "traffic_provider": 0.5
+    },
+    "total_n": 2,
+    "confidence": "low"
+  },
+  "Shelby Forum": {
+    "distribution": {
+      "seeking_psp": 0.5,
+      "traffic_provider": 0.5
+    },
+    "total_n": 2,
+    "confidence": "low"
+  },
+  "PSP Judges Dinner SBC Lisbon": {
+    "distribution": {
+      "seeking_psp": 1
+    },
+    "total_n": 1,
+    "confidence": "low"
+  },
+  "ОФФЕР С ROI 1500%+": {
+    "distribution": {
+      "psp_provider": 1
+    },
+    "total_n": 1,
+    "confidence": "low"
+  },
+  "CPA.TG | JUST NO RESPECT CLUB | МАТАДОРА 🐗": {
+    "distribution": {
+      "seeking_traffic": 1
+    },
+    "total_n": 1,
+    "confidence": "low"
+  },
+  ".aff | chat | Арбитраж | Вакансии": {
+    "distribution": {
+      "seeking_traffic": 1
+    },
+    "total_n": 1,
+    "confidence": "low"
+  }
+}

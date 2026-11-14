@@ -47,6 +47,7 @@ wheels/
 /tests/
 /data/*
 !/data/buyer_stopwords.json
+!/data/group_context/
 /.DS_Store/
 /fusion_debug.log
 /playground.ipynb

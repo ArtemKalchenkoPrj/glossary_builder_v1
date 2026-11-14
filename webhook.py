@@ -453,8 +453,8 @@ async def lifespan(app: FastAPI):
 
     # ── Group context ────────────────────────────────────────────────────
     if buyer_gc_enabled:
-        gc_path = project_root / "impovements" / "group_context_prior.json"
-        gid_path = project_root / "impovements" / "group_id_to_name.json"
+        gc_path = project_root / "data" / "group_context" / "group_context_prior.json"
+        gid_path = project_root / "data" / "group_context" / "group_id_to_name.json"
         if gc_path.exists() and gid_path.exists():
             with open(gc_path, encoding="utf-8-sig") as f:
                 _state.group_context = json.load(f)
