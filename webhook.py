@@ -756,12 +756,14 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
     """Write buyer classification result to PostgreSQL."""
     try:
         async with _state.pool.acquire() as conn:
-            result["geo"], result["payment_methods_mentioned"] = await process_geo(
-                message_id=result.get("message_id"),
-                raw_geo_list=result.get("geo") or [],
-                payment_methods=result.get("payment_methods_mentioned") or [],
-                conn=conn,
-            )
+            # Normalize only confirmed leads; MISTAKE / non-lead rows keep raw values.
+            if result.get("verdict") == "REAL_LEAD":
+                result["geo"], result["payment_methods_mentioned"] = await process_geo(
+                    message_id=result.get("message_id"),
+                    raw_geo_list=result.get("geo") or [],
+                    payment_methods=result.get("payment_methods_mentioned") or [],
+                    conn=conn,
+                )
             row = await conn.fetchrow(
                 _UPSERT_SQL,
                 group_id,  # $1
