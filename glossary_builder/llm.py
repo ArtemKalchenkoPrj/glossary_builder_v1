@@ -404,6 +404,7 @@ def extract_json(text: str) -> Any | None:
 
 _ANTHROPIC_TO_OPENROUTER: dict[str, str] = {
     "claude-haiku-5-5": "anthropic/claude-haiku-5.5",
+    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
     "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
 }
 

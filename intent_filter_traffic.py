@@ -140,7 +140,12 @@ STOP_WORDS: list[str] = [
     "flash coins",
     "fake btc",
     # Recovery / database scam
-    "chargeback",
+    "recovery",
+    "recover",          # recover worldwide / recovers (covers "recovery" too)
+    "rekaver", "rekover", "rekavery", "recaver", "recavery", "ricovery",
+    "рековери", "рекавери", "рекавер", "рековер", "рекаверь",
+    "chardzeback", "chardgeback", "charge back", "chargeback",
+    "чардж", "чарджбэк", "чарджбек", "чарджбэки",
     "recovery leads",
     "database leads",
     "recovery chargeback",

@@ -48,6 +48,11 @@ class TrafficDecision:
     verdict:      Optional[str] = None   # "TRAFFIC_PROVIDER" | "TRAFFIC_LEAD" | "MISTAKE"
     judge_reason: Optional[str] = None
 
+    # ── Certainty gate output ─────────────────────────────────────────────────
+    certainty:               Optional[str] = None   # "CERTAIN" | "UNCERTAIN" | None (gate off / not a lead)
+    gate_uncertainty_reason: Optional[str] = None   # sms | infra | role_unclear | gate_api_error | ...
+    gate_reason:             Optional[str] = None   # free-text explanation from the gate model
+
     # ── Pipeline tag (for DB) ─────────────────────────────────────────────────
     pipeline: str = "traffic"
 
@@ -70,6 +75,9 @@ class TrafficDecision:
             "elapsed_ms":         self.elapsed_ms,
             "verdict":            self.verdict,
             "judge_reason":       self.judge_reason,
+            "certainty":          self.certainty,
+            "gate_uncertainty_reason": self.gate_uncertainty_reason,
+            "gate_reason":        self.gate_reason,
             "pipeline":           self.pipeline,
         }
 
@@ -123,3 +131,17 @@ class TrafficExtractionConfig:
 
     def judge_model(self) -> Optional[str]:
         return os.environ.get("TRAFFIC_JUDGE_MODEL")
+
+    # ── Certainty gate (Anthropic models, read from ENV at runtime) ───────────
+    # TRAFFIC_GATE_ENABLED        — "1"/"true" turns the gate on (default: off)
+    # TRAFFIC_GATE_MODEL          — checks confirmed leads   (default: claude-haiku-5-5)
+    # TRAFFIC_GATE_RESOLVER_MODEL — resolves extractor/judge mismatches (default: claude-sonnet-5-5)
+
+    def gate_enabled(self) -> bool:
+        return os.environ.get("TRAFFIC_GATE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+    def gate_model(self) -> str:
+        return os.environ.get("TRAFFIC_GATE_MODEL") or "claude-haiku-5-5"
+
+    def gate_resolver_model(self) -> str:
+        return os.environ.get("TRAFFIC_GATE_RESOLVER_MODEL") or "claude-sonnet-5-5"

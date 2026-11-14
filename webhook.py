@@ -937,6 +937,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     verdict, judge_reason,
     pipeline,
     db_write_status, db_write_error,
+    certainty, gate_uncertainty_reason,
     classified_at
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
@@ -947,6 +948,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     $17, $18,
     $19,
     $20, $21,
+    $22, $23,
     NOW()
 )
 ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
@@ -969,6 +971,8 @@ ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
     pipeline              = EXCLUDED.pipeline,
     db_write_status       = EXCLUDED.db_write_status,
     db_write_error        = EXCLUDED.db_write_error,
+    certainty             = EXCLUDED.certainty,
+    gate_uncertainty_reason = EXCLUDED.gate_uncertainty_reason,
     classified_at         = NOW()
 RETURNING id;
 """
@@ -1052,10 +1056,13 @@ async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
                 _jsonb(_to_list(result.get("glossary_terms_seen"))),# $15
                 result.get("elapsed_ms"),                           # $16
                 result.get("verdict"),                              # $17
-                result.get("judge_reason"),                         # $18
+                " | ".join(filter(None, [result.get("judge_reason"),
+                                         result.get("gate_reason")])) or None,  # $18
                 "traffic",                                          # $19 pipeline
                 "ok",                                               # $20
                 None,                                               # $21
+                result.get("certainty"),                            # $22 certainty
+                result.get("gate_uncertainty_reason"),              # $23 gate_uncertainty_reason
             )
 
         result["db_write_status"] = "ok"
@@ -1586,6 +1593,12 @@ async def classify(body: ClassifyRequest) -> dict:
                     logger.info(
                         "[traffic] judge_reason: %s",
                         traffic_result.get("judge_reason", ""),
+                    )
+                    logger.info(
+                        "[traffic] gate certainty=%s reason=%s | %s",
+                        traffic_result.get("certainty"),
+                        traffic_result.get("gate_uncertainty_reason"),
+                        (traffic_result.get("gate_reason") or "")[:200],
                     )
                 else:
                     logger.info(

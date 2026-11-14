@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,7 @@ from .traffic_prompt import (
     _TRAFFIC_SYSTEM_TEMPLATE,
     _TRAFFIC_JUDGE_SYSTEM,
 )
+from .traffic_gate_prompt import TRAFFIC_GATE_SYSTEM, TRAFFIC_GATE_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +283,35 @@ def _call_llm(
         return {"_error": str(exc)}
 
 
+_anthropic_clients: dict = {}
+_anthropic_clients_lock = threading.Lock()
+
+
+def _get_anthropic_client(model: str):
+    with _anthropic_clients_lock:
+        client = _anthropic_clients.get(model)
+        if client is None:
+            from glossary_builder.llm import make_anthropic_llm
+            client = make_anthropic_llm(model)
+            _anthropic_clients[model] = client
+        return client
+
+
+def _call_llm_anthropic(*, system: str, user: str, max_tokens: int, model: str) -> dict:
+    """Call an Anthropic model (OpenRouter fallback inside the client), parse JSON."""
+    raw = ""
+    try:
+        raw = _get_anthropic_client(model).complete(system, user, max_tokens=max_tokens).text.strip()
+        return json.loads(_extract_json(raw))
+    except json.JSONDecodeError as exc:
+        logger.error("traffic_classifier: anthropic JSON parse error (model=%s): %s | raw=%r",
+                     model, exc, raw[:300])
+        return {"_error": f"json_parse: {exc}"}
+    except Exception as exc:
+        logger.error("traffic_classifier: anthropic call failed (model=%s): %s", model, exc)
+        return {"_error": str(exc)}
+
+
 def _call_llm_via_client(
     llm: LLMClient,
     *,
@@ -379,6 +410,19 @@ def _run_full_llm(text: str, username: Optional[str], llm: LLMClient,
     )
     user_msg = f"[Автор]: {author}\n[Сообщение]: {text}{terms_hint}"
 
+    # Optional: Anthropic extractor (e.g. claude-haiku-5-5) via ANTHROPIC_API_KEY.
+    # AnthropicLLMClient falls back to the same model on OpenRouter on spend/rate
+    # limit; if the call still fails we fall through to the OpenRouter model below.
+    anthropic_model = os.environ.get("TRAFFIC_EXTRACTOR_ANTHROPIC_MODEL")
+    if anthropic_model:
+        result = _call_llm_anthropic(
+            system=system, user=user_msg, max_tokens=600, model=anthropic_model,
+        )
+        if not result.get("_error"):
+            return result
+        logger.warning("traffic_classifier: anthropic extractor failed (%s) — "
+                       "falling back to OpenRouter model", result["_error"])
+
     # Use httpx directly so TRAFFIC_OPENROUTER_API_KEY is always picked up.
     # _call_llm_via_client(llm) would use the LLMClient's internal SDK key
     # which is set at __init__ time and ignores TRAFFIC_OPENROUTER_API_KEY.
@@ -424,6 +468,109 @@ def _verdict_matches(lead_type: Optional[str], verdict: Optional[str]) -> bool:
     """True iff the extractor lead_type and judge verdict are consistent."""
     expected = _LEAD_TYPE_TO_VERDICT.get(lead_type or "")
     return expected is not None and verdict == expected
+
+
+# ---------------------------------------------------------------------------
+# Certainty gate (runs only after the judge)
+# ---------------------------------------------------------------------------
+#
+#  * extractor and judge agree on a lead -> gate model (Haiku) checks how obvious it is:
+#        lead -> CERTAIN;  uncertain / not_lead -> UNCERTAIN (operator decides)
+#  * extractor says lead, judge disagrees (other role or MISTAKE) -> resolver (Sonnet)
+#    makes the final call:
+#        lead + clear role               -> lead with that role, CERTAIN
+#        lead + ambiguous role/uncertain -> lead, UNCERTAIN ("role_unclear" or its reason)
+#        not_lead                        -> MISTAKE (not persisted)
+#  * any gate API / parse error -> UNCERTAIN with reason "gate_api_error" (fail-safe:
+#    the operator sees it, nothing goes to the client automatically)
+
+_GATE_LABELS = ("lead", "not_lead", "uncertain")
+_ROLE_TO_LEAD_TYPE = {"seller": "traffic_provider", "buyer": "seeking_traffic"}
+_GATE_REASONS = ("type_unspecified", "infra", "ad_vs_payment", "offer_no_context", "sms", "other")
+
+
+def _call_gate(text: str, username: Optional[str], model: str) -> dict:
+    """Run the gate prompt on an Anthropic model. Returns parsed JSON or {"_error": ...}."""
+    user = TRAFFIC_GATE_USER_TEMPLATE.format(username=username or "unknown", text=text)
+    result = _call_llm_anthropic(system=TRAFFIC_GATE_SYSTEM, user=user, max_tokens=400, model=model)
+    if result.get("_error"):
+        return result
+    if result.get("label") not in _GATE_LABELS:
+        return {"_error": f"bad gate label: {result.get('label')!r}"}
+    return result
+
+
+def _gate_reason_text(model: str, gate: dict) -> str:
+    return (f"[gate {model}: {gate.get('label')}/{gate.get('role')}/"
+            f"{gate.get('uncertainty_reason')}] {gate.get('reason') or ''}").strip()
+
+
+def _apply_gate_to_lead(decision: TrafficDecision, text: str, username: Optional[str],
+                        cfg: TrafficExtractionConfig) -> None:
+    """Extractor and judge agree: mark the lead CERTAIN or UNCERTAIN."""
+    model = cfg.gate_model()
+    gate = _call_gate(text, username, model)
+    if gate.get("_error"):
+        logger.warning("traffic_classifier: gate error message_id=%s: %s",
+                       decision.message_id, gate["_error"])
+        decision.certainty = "UNCERTAIN"
+        decision.gate_uncertainty_reason = "gate_api_error"
+        decision.gate_reason = f"[gate {model} error] {gate['_error']}"[:500]
+        return
+    decision.gate_reason = _gate_reason_text(model, gate)
+    if gate["label"] == "lead":
+        decision.certainty = "CERTAIN"
+        decision.gate_uncertainty_reason = None
+    else:
+        decision.certainty = "UNCERTAIN"
+        reason = gate.get("uncertainty_reason")
+        decision.gate_uncertainty_reason = (
+            reason if reason in _GATE_REASONS
+            else "gate_not_lead" if gate["label"] == "not_lead" else "other"
+        )
+
+
+def _resolve_mismatch(decision: TrafficDecision, text: str, username: Optional[str],
+                      cfg: TrafficExtractionConfig, judge_verdict: Optional[str]) -> None:
+    """Extractor says lead, judge disagrees: the resolver model makes the final call."""
+    model = cfg.gate_resolver_model()
+    gate = _call_gate(text, username, model)
+    prefix = f"[mismatch: extractor={decision.lead_type}, judge={judge_verdict}] "
+    if gate.get("_error"):
+        logger.warning("traffic_classifier: resolver error message_id=%s: %s",
+                       decision.message_id, gate["_error"])
+        # keep the extractor's lead, but never auto-send it
+        decision.is_lead = True
+        decision.verdict = _lead_type_to_verdict(decision.lead_type)
+        decision.certainty = "UNCERTAIN"
+        decision.gate_uncertainty_reason = "gate_api_error"
+        decision.gate_reason = (prefix + f"[resolver {model} error] {gate['_error']}")[:500]
+        return
+
+    decision.gate_reason = prefix + _gate_reason_text(model, gate)
+    label, role = gate["label"], gate.get("role")
+    if label == "not_lead":
+        decision.is_lead = False
+        decision.verdict = "MISTAKE"
+        decision.certainty = None
+        decision.gate_uncertainty_reason = None
+        return
+
+    # lead or uncertain: keep it, take the resolver's role when it is clear
+    if role in _ROLE_TO_LEAD_TYPE:
+        decision.lead_type = _ROLE_TO_LEAD_TYPE[role]
+    decision.is_lead = True
+    decision.verdict = _lead_type_to_verdict(decision.lead_type)
+    if label == "lead" and role in _ROLE_TO_LEAD_TYPE:
+        decision.certainty = "CERTAIN"
+        decision.gate_uncertainty_reason = None
+    else:
+        decision.certainty = "UNCERTAIN"
+        reason = gate.get("uncertainty_reason")
+        decision.gate_uncertainty_reason = (
+            "role_unclear" if role not in _ROLE_TO_LEAD_TYPE
+            else reason if reason in _GATE_REASONS else "other"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +669,7 @@ def classify_traffic_message(
         return _done("llm_miss")
 
     # ── Stage 6: Judge ────────────────────────────────────────────────────────
+    gate_on = cfg.gate_enabled()
     if cfg.judge_enabled:
         judge = _run_judge(text, username, ext, llm, cfg)
         if judge.get("_error"):
@@ -535,20 +683,37 @@ def classify_traffic_message(
 
         # ── Stage 7: alignment check ──────────────────────────────────────────
         if not _verdict_matches(decision.lead_type, decision.verdict):
+            judge_verdict = decision.verdict
             logger.info(
                 "traffic_classifier: type_mismatch message_id=%s lead_type=%s verdict=%s",
-                message_id, decision.lead_type, decision.verdict,
+                message_id, decision.lead_type, judge_verdict,
             )
+            if gate_on:
+                # ── Stage 8a: resolver decides instead of dropping the lead ──
+                _resolve_mismatch(decision, text, username, cfg, judge_verdict)
+                logger.info(
+                    "traffic_classifier: mismatch resolved message_id=%s verdict=%s certainty=%s reason=%s",
+                    message_id, decision.verdict, decision.certainty, decision.gate_uncertainty_reason,
+                )
+                return _done("type_mismatch_resolved" if decision.is_lead else "type_mismatch")
             decision.is_lead      = False
             decision.verdict      = "MISTAKE"
             decision.judge_reason = (
-                f"[type_mismatch: extractor={decision.lead_type}, judge={decision.verdict}] "
+                f"[type_mismatch: extractor={decision.lead_type}, judge={judge_verdict}] "
                 + (decision.judge_reason or "")
             )
             return _done("type_mismatch")
     else:
         # Judge disabled — derive verdict from lead_type
         decision.verdict = _lead_type_to_verdict(decision.lead_type)
+
+    # ── Stage 8b: certainty gate on confirmed leads ───────────────────────────
+    if gate_on and decision.is_lead and decision.verdict in ("TRAFFIC_PROVIDER", "TRAFFIC_LEAD"):
+        _apply_gate_to_lead(decision, text, username, cfg)
+        logger.info(
+            "traffic_classifier: gate message_id=%s certainty=%s reason=%s",
+            message_id, decision.certainty, decision.gate_uncertainty_reason,
+        )
 
     return _done("ok")
 
