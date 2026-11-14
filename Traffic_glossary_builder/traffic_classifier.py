@@ -732,3 +732,50 @@ def _ensure_list(value) -> list:
 
 def _lead_type_to_verdict(lead_type: Optional[str]) -> Optional[str]:
     return _LEAD_TYPE_TO_VERDICT.get(lead_type or "")
+
+# ---------------------------------------------------------------------------
+# Effective configuration (for the webhook startup log)
+# ---------------------------------------------------------------------------
+
+def describe_traffic_config(cfg: TrafficExtractionConfig) -> list[tuple[str, str]]:
+    """Return (label, value) pairs describing which models the traffic pipeline
+    will actually call, resolved with the same fallbacks the stages use."""
+    from glossary_builder.llm import _ANTHROPIC_TO_OPENROUTER
+
+    default = os.environ.get("GLOSSARY_MODEL") or "openai/gpt-4.1-nano"
+
+    def _openrouter(env: str) -> str:
+        value = os.environ.get(env)
+        return value if value else f"{default} (GLOSSARY_MODEL / nano fallback, {env} not set)"
+
+    def _anthropic(model: str) -> str:
+        or_model = _ANTHROPIC_TO_OPENROUTER.get(model, f"anthropic/{model}")
+        return f"{model} via ANTHROPIC_API_KEY (on 400/429: OpenRouter {or_model})"
+
+    lines: list[tuple[str, str]] = []
+    lines.append(("Pre-filter", str(cfg.pre_filter_enabled)))
+    lines.append(("Stage1", f"{cfg.stage1_enabled} | model: {_openrouter('TRAFFIC_STAGE1_MODEL')}"))
+
+    anthropic_model = os.environ.get("TRAFFIC_EXTRACTOR_ANTHROPIC_MODEL")
+    if anthropic_model:
+        lines.append(("Extractor", _anthropic(anthropic_model)))
+        lines.append(("Extractor fallback", _openrouter("TRAFFIC_EXTRACTOR_MODEL")))
+    else:
+        lines.append(("Extractor", f"{_openrouter('TRAFFIC_EXTRACTOR_MODEL')} (OpenRouter; "
+                                   "TRAFFIC_EXTRACTOR_ANTHROPIC_MODEL not set)"))
+
+    lines.append(("Judge", f"{cfg.judge_enabled} | model: {_openrouter('TRAFFIC_JUDGE_MODEL')}"))
+
+    if cfg.gate_enabled():
+        lines.append(("Certainty gate", "ON (TRAFFIC_GATE_ENABLED)"))
+        lines.append(("Gate: leads", _anthropic(cfg.gate_model())))
+        lines.append(("Gate: mismatches", _anthropic(cfg.gate_resolver_model())))
+        lines.append(("Gate: on error", "UNCERTAIN / gate_api_error"))
+    else:
+        lines.append(("Certainty gate", "OFF (TRAFFIC_GATE_ENABLED not set) - certainty=NULL, "
+                                        "extractor/judge mismatches are dropped"))
+
+    uses_anthropic = bool(anthropic_model) or cfg.gate_enabled()
+    if uses_anthropic and not os.environ.get("ANTHROPIC_API_KEY"):
+        lines.append(("WARNING", "ANTHROPIC_API_KEY is not set - Anthropic calls will fail"))
+    return lines

@@ -87,6 +87,7 @@ from PSP_providers_glossary_builder.provider_decision import ProviderExtractionC
 # Traffic pipeline imports
 from Traffic_glossary_builder.traffic_classifier import (
     classify_traffic_message,
+    describe_traffic_config,
     load_traffic_glossary,
     make_traffic_llm_client,
 )
@@ -350,22 +351,9 @@ def _log_startup_config() -> None:
     # ── Traffic pipeline ──────────────────────────────────────────────────
     logger.info(sep)
     logger.info("  TRAFFIC PIPELINE")
-    logger.info(
-        "  Stage1 model   : %s",
-        os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic LLM)"),
-    )
-    logger.info(
-        "  Extractor model: %s",
-        os.environ.get("TRAFFIC_EXTRACTOR_MODEL", "(GLOSSARY_MODEL / nano fallback)"),
-    )
-    logger.info(
-        "  Judge model    : %s",
-        os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic LLM)"),
-    )
-    logger.info("  Glossary       : %d entries", len(_state.traffic_glossary))
-    logger.info("  Pre-filter     : %s", _state.traffic_cfg.pre_filter_enabled)
-    logger.info("  Stage1         : %s", _state.traffic_cfg.stage1_enabled)
-    logger.info("  Judge          : %s", _state.traffic_cfg.judge_enabled)
+    for label, value in describe_traffic_config(_state.traffic_cfg):
+        logger.info("  %-19s: %s", label, value)
+    logger.info("  Glossary           : %d entries", len(_state.traffic_glossary))
 
     # ── Crypto Cards pipeline ─────────────────────────────────────────────
     logger.info(sep)
