@@ -110,6 +110,10 @@ normalize → LLM resolve unknowns → expand regions → infer geo from payment
 - `TRAFFIC_OPENROUTER_API_KEY` — traffic pipeline
 - `CRYPTO_CARDS_OPENROUTER_API_KEY` — crypto cards pipeline
 
+Optional (provider pipeline, off by default): `ANTHROPIC_API_KEY` + `PROVIDER_STAGE1_ANTHROPIC_MODEL` /
+`PROVIDER_EXTRACTOR_ANTHROPIC_MODEL` / `PROVIDER_JUDGE_ANTHROPIC_MODEL` (Haiku via Anthropic API with OpenRouter fallback),
+`PROVIDER_JUDGE_PROMPT=codebook` (3-way judge, writes `certainty`). See [docs/04](docs/04-llm-classification.md).
+
 ## Offline tooling (not part of runtime classification)
 
 - `glossary_builder/` and `glossary_builder_crypto_buyers/` — CLI tools for building glossaries from raw chat data (pipeline.py, candidates.py, fusion.py, etc.)

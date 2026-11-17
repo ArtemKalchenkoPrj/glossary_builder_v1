@@ -80,7 +80,7 @@ from buyer_anti_filter import load_stopwords, anti_filter
 from PSP_providers_glossary_builder.provider_classifier import (
     classify_provider_message,
     load_provider_glossary,
-    make_provider_llm_client, ProviderExtractor,
+    make_provider_llm_client, make_provider_stage_llm, make_provider_anthropic_stage_llm, ProviderExtractor,
 )
 from PSP_providers_glossary_builder.provider_decision import ProviderExtractionConfig
 
@@ -186,6 +186,9 @@ class _AppState:
     provider_llm: LLMClient
     provider_cfg: ProviderExtractionConfig
     provider_extractor: ProviderExtractor
+    provider_stage1_llm: object | None = None      # PROVIDER_STAGE1_ANTHROPIC_MODEL (chain) or PROVIDER_STAGE1_MODEL
+    provider_extractor_llm: object | None = None   # PROVIDER_EXTRACTOR_ANTHROPIC_MODEL (chain) or provider_llm
+    provider_judge_llm: object | None = None       # PROVIDER_JUDGE_ANTHROPIC_MODEL (chain) or PROVIDER_JUDGE_MODEL
 
     # Traffic pipeline
     traffic_glossary: list[dict]
@@ -334,14 +337,10 @@ def _log_startup_config() -> None:
     logger.info("  PROVIDER PIPELINE")
     logger.info("  LLM provider   : %s", _state.provider_llm.provider)
     logger.info("  LLM model      : %s", _state.provider_llm.model)
-    logger.info(
-        "  Stage1 model   : %s",
-        os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider LLM)"),
-    )
-    logger.info(
-        "  Judge model    : %s",
-        os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider LLM)"),
-    )
+    logger.info("  Stage1 model   : %s", _provider_stage_desc(_state.provider_stage1_llm))
+    logger.info("  Extractor model: %s", _provider_stage_desc(_state.provider_extractor_llm))
+    logger.info("  Judge model    : %s", _provider_stage_desc(_state.provider_judge_llm))
+    logger.info("  Judge prompt   : %s", _state.provider_cfg.judge_prompt)
     logger.info("  Glossary       : %d entries", len(_state.provider_glossary))
     logger.info("  Pre-filter     : %s", _state.provider_cfg.pre_filter_enabled)
     logger.info("  Pre-filter DB  : %s", _state.provider_cfg.pre_filter_db_path)
@@ -494,20 +493,38 @@ async def lifespan(app: FastAPI):
         _state.provider_llm = LLMClient()
         logger.warning("[startup] provider LLM: fallback to main LLMClient")
 
+    judge_prompt = (os.environ.get("PROVIDER_JUDGE_PROMPT") or "legacy").strip().lower()
+    if judge_prompt not in ("legacy", "codebook"):
+        logger.warning("[startup] PROVIDER_JUDGE_PROMPT=%r is not legacy|codebook - using legacy", judge_prompt)
+        judge_prompt = "legacy"
     _state.provider_cfg = ProviderExtractionConfig(
         pre_filter_db_path=provider_db_path,
+        judge_prompt=judge_prompt,
     )
+
+    # Per stage: Anthropic first (PROVIDER_<STAGE>_ANTHROPIC_MODEL, ANTHROPIC_API_KEY) with the stage's
+    # previous OpenRouter client as the last-resort fallback; unset flag = stage unchanged.
+    base_stage1 = make_provider_stage_llm("PROVIDER_STAGE1_MODEL")
+    base_judge = make_provider_stage_llm("PROVIDER_JUDGE_MODEL")
+    _state.provider_stage1_llm = make_provider_anthropic_stage_llm(
+        "PROVIDER_STAGE1_ANTHROPIC_MODEL", base_stage1 or _state.provider_llm, "stage1") or base_stage1
+    _state.provider_extractor_llm = make_provider_anthropic_stage_llm(
+        "PROVIDER_EXTRACTOR_ANTHROPIC_MODEL", _state.provider_llm, "extractor") or _state.provider_llm
+    _state.provider_judge_llm = make_provider_anthropic_stage_llm(
+        "PROVIDER_JUDGE_ANTHROPIC_MODEL", base_judge or _state.provider_llm, "judge") or base_judge
 
     _state.provider_extractor = ProviderExtractor(
         glossary=_state.provider_glossary,
-        llm=_state.provider_llm,
+        llm=_state.provider_extractor_llm,
         cfg=_state.provider_cfg,
+        stage1_llm=_state.provider_stage1_llm,
     )
     logger.info(
-        "[startup] provider pipeline ready: pre_filter=%s stage1=%s judge=%s",
+        "[startup] provider pipeline ready: pre_filter=%s stage1=%s judge=%s judge_prompt=%s",
         _state.provider_cfg.pre_filter_enabled,
         _state.provider_cfg.stage1_enabled,
         _state.provider_cfg.judge_enabled,
+        _state.provider_cfg.judge_prompt,
     )
 
     # ── PostgreSQL connection pool ────────────────────────────────────────
@@ -795,6 +812,17 @@ async def _persist_buyer(group_id: Optional[int], result: dict) -> dict:
     return result
 
 
+def _provider_stage_desc(client) -> str:
+    """Human-readable model of a provider stage for the startup log / status endpoint."""
+    if client is None:
+        return "(same as provider LLM)"
+    if hasattr(client, "stats"):
+        st = client.stats()
+        return (f"{st['model']} via Anthropic API (fallback: {st['fallback_model']}; "
+                f"served primary={st['primary_calls']} fallback={st['fallback_calls']})")
+    return str(client.model)
+
+
 async def _persist_provider(group_id: Optional[int], result: dict, source_lead_id: Optional[int] = None) -> dict:
     """Write provider classification result to PostgreSQL.
 
@@ -842,6 +870,8 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                     )
                     # Записуємо як MISTAKE з поясненням
                     result["verdict"] = "MISTAKE"
+                    result["certainty"] = None
+                    result["gate_uncertainty_reason"] = None
                     result["judge_reason"] = f"[multiacc duplicate of id={existing['id']}]"
                     result["rationale"] = f"[multiacc duplicate of id={existing['id']}]"
                     result["db_id"] = existing["id"]
@@ -884,8 +914,8 @@ async def _persist_provider(group_id: Optional[int], result: dict, source_lead_i
                 "ok",
                 None,
                 None,  # $25 is_merchant (N/A for provider pipeline)
-                None,  # $26 certainty (N/A for provider pipeline)
-                None,  # $27 gate_uncertainty_reason
+                result.get("certainty"),                  # $26 certainty (codebook judge: CERTAIN | UNCERTAIN)
+                result.get("gate_uncertainty_reason"),    # $27 judge_uncertain | gate_api_error
             )
         result["db_write_status"] = "ok"
         result["db_write_error"] = None
@@ -1323,6 +1353,7 @@ async def classify(body: ClassifyRequest) -> dict:
                     timestamp=body.timestamp,
                     context=context,
                     extractor=_state.provider_extractor,
+                    judge_llm=_state.provider_judge_llm,
                 ),
                 asyncio.to_thread(
                     classify_traffic_message,
@@ -1491,15 +1522,17 @@ async def classify(body: ClassifyRequest) -> dict:
 
                 logger.info(
                     "[provider] done message_id=%s is_provider=%s "
-                    "verdict=%s confidence=%s elapsed=%.0fms",
-                    body.message_id, is_prov, verdict, conf, elapsed or 0,
+                    "verdict=%s certainty=%s confidence=%s elapsed=%.0fms",
+                    body.message_id, is_prov, verdict, provider_result.get("certainty"), conf, elapsed or 0,
                 )
 
                 if is_prov and verdict == "REAL_PROVIDER":
                     logger.info(
-                        "[provider] PROVIDER ✓ message_id=%s "
+                        "[provider] PROVIDER ✓ message_id=%s certainty=%s reason=%s "
                         "company=%r position=%r geo=%s vertical=%s methods=%s",
                         body.message_id,
+                        provider_result.get("certainty"),
+                        provider_result.get("gate_uncertainty_reason"),
                         provider_result.get("company"),
                         provider_result.get("position"),
                         provider_result.get("geo"),
@@ -1707,8 +1740,10 @@ async def debug() -> dict:
             "buyer_stage1_llm":    _state.buyer_stage1_llm.model if _state.buyer_stage1_llm else None,
             "buyer_gate_llm":      _state.buyer_gate_llm.model if _state.buyer_gate_llm else None,
             "provider_llm":        _state.provider_llm.model,
-            "stage1_model":        os.environ.get("PROVIDER_STAGE1_MODEL", "(same as provider_llm)"),
-            "judge_model":         os.environ.get("PROVIDER_JUDGE_MODEL", "(same as provider_llm)"),
+            "stage1_model":        _provider_stage_desc(_state.provider_stage1_llm),
+            "extractor_model":     _provider_stage_desc(_state.provider_extractor_llm),
+            "judge_model":         _provider_stage_desc(_state.provider_judge_llm),
+            "judge_prompt":        _state.provider_cfg.judge_prompt,
             "traffic_stage1":      os.environ.get("TRAFFIC_STAGE1_MODEL", "(same as traffic_llm)"),
             "traffic_judge":       os.environ.get("TRAFFIC_JUDGE_MODEL", "(same as traffic_llm)"),
             "crypto_cards_stage1": os.environ.get("CRYPTO_CARDS_STAGE1_MODEL", "(same as crypto_cards_llm)"),

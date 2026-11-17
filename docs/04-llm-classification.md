@@ -117,6 +117,18 @@ flowchart LR
 - `verdict`: REAL_PROVIDER / MISTAKE / REVIEW
 - Модель: env `PROVIDER_JUDGE_MODEL`
 
+**Haiku через Anthropic API (опционально, по этапам):** `PROVIDER_STAGE1_ANTHROPIC_MODEL`,
+`PROVIDER_EXTRACTOR_ANTHROPIC_MODEL`, `PROVIDER_JUDGE_ANTHROPIC_MODEL` (например `claude-haiku-5-5`, ключ `ANTHROPIC_API_KEY`).
+Цепочка `AnthropicChainLLM`: Anthropic → при 400/429 тот же Haiku на OpenRouter → при любой ошибке прежняя модель этапа
+(nano на `PSP_PROVIDERS_OPENROUTER_API_KEY`), лид не теряется. Без флага этап не меняется. Текущие модели и счётчики
+основного/запасного вызова: стартовый лог и `/debug`.
+
+**Судья по кодбуку (опционально):** `PROVIDER_JUDGE_PROMPT=codebook` (по умолчанию `legacy`).
+Промпт [provider_judge_codebook.py](../PSP_providers_glossary_builder/provider_judge_codebook.py), исходы LEAD / UNCERTAIN / NOT_LEAD
+сохраняются как в других вертикалях: LEAD → `REAL_PROVIDER` + `certainty=CERTAIN`; UNCERTAIN → `REAL_PROVIDER` + `certainty=UNCERTAIN`
++ `gate_uncertainty_reason=judge_uncertain`; NOT_LEAD → `MISTAKE` (в БД не пишется); сбой судьи → `UNCERTAIN` +
+`gate_api_error` (fail-safe). Колонки `certainty` и `gate_uncertainty_reason` в `classified_messages_dirty`.
+
 ---
 
 ### Traffic pipeline

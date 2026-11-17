@@ -52,6 +52,10 @@ from .provider_decision import (
     ProviderExtractionConfig,
     _build_provider_decision,
 )
+from .provider_judge_codebook import (
+    PROVIDER_JUDGE_CODEBOOK_SYSTEM,
+    PROVIDER_JUDGE_CODEBOOK_USER_TEMPLATE,
+)
 from .provider_prompt import (
     PROVIDER_DEFINITION,
     _PROVIDER_STAGE1_SYSTEM,
@@ -83,6 +87,94 @@ def make_provider_llm_client() -> LLMClient:
         model     = os.environ.get("PSP_PROVIDERS_MODEL", "openai/gpt-4.1-nano"),
        # temperature = 0
     ))
+
+
+def make_provider_stage_llm(env_var: str) -> Optional[LLMClient]:
+    """Dedicated LLMClient for one stage, with the model read from ``env_var``.
+
+    Returns None when the variable is unset/empty — the caller then falls back to
+    the shared provider client. Each stage gets its OWN client, so its model is
+    fixed at creation and never leaks into other stages or threads.
+
+    NB: ``GLOSSARY_MODEL`` (if set) overrides ``LLMConfig.model`` inside LLMClient,
+    so the model is assigned on the client after construction.
+    """
+    model = (os.environ.get(env_var) or "").strip()
+    if not model:
+        return None
+    try:
+        client = make_provider_llm_client()
+    except ValueError:
+        client = LLMClient()
+    client.model = model
+    return client
+
+class AnthropicChainLLM:
+    """One pipeline stage on the Anthropic API with a safe fallback.
+
+    Order (same idea as the traffic extractor, TRAFFIC_EXTRACTOR_ANTHROPIC_MODEL):
+      1. ``AnthropicLLMClient`` (ANTHROPIC_API_KEY). On spend / rate limit (400 / 429) it switches
+         itself to the same model on OpenRouter;
+      2. if the call still fails, the stage's previous client (``fallback``, e.g. gpt-4.1-nano on the
+         provider OpenRouter key) answers instead - a lead is never lost because of an API outage.
+
+    Drop-in for LLMClient in this module: ``model``, ``set_stage``, ``complete``, ``complete_json``.
+    ``stats()`` reports how many calls were served by the primary and by the fallback.
+    """
+
+    def __init__(self, model: str, fallback: LLMClient | None, name: str = "stage"):
+        from glossary_builder.config import LLMConfig
+        from glossary_builder.llm import AnthropicLLMClient
+        # max_retries=2: the webhook must not sit for a minute in retry sleeps before falling back
+        self.primary = AnthropicLLMClient(LLMConfig(model=model, max_retries=2))
+        self.fallback = fallback
+        self.name = name
+        self.model = model
+        self.primary_calls = 0
+        self.fallback_calls = 0
+        self._lock = threading.Lock()
+
+    def set_stage(self, stage: str) -> None:
+        self.primary.set_stage(stage)
+        if self.fallback is not None:
+            self.fallback.set_stage(stage)
+
+    def _run(self, method: str, *args, **kwargs):
+        try:
+            out = getattr(self.primary, method)(*args, **kwargs)
+            with self._lock:
+                self.primary_calls += 1
+            return out
+        except Exception as exc:  # noqa: BLE001 - any API failure falls back
+            if self.fallback is None:
+                raise
+            logger.warning("[provider] %s: Anthropic %s failed (%s: %s) - falling back to %s",
+                           self.name, self.model, type(exc).__name__, str(exc)[:160], self.fallback.model)
+            with self._lock:
+                self.fallback_calls += 1
+            return getattr(self.fallback, method)(*args, **kwargs)
+
+    def complete(self, *args, **kwargs):
+        return self._run("complete", *args, **kwargs)
+
+    def complete_json(self, *args, **kwargs):
+        return self._run("complete_json", *args, **kwargs)
+
+    def stats(self) -> dict:
+        return {"model": self.model, "primary_calls": self.primary_calls, "fallback_calls": self.fallback_calls,
+                "fallback_model": self.fallback.model if self.fallback is not None else None}
+
+
+def make_provider_anthropic_stage_llm(env_var: str, fallback: LLMClient | None, name: str) -> Optional[AnthropicChainLLM]:
+    """Anthropic-first client for one stage, or None when ``env_var`` is unset/empty (stage unchanged)."""
+    model = (os.environ.get(env_var) or "").strip()
+    if not model:
+        return None
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.warning("[provider] %s is set but ANTHROPIC_API_KEY is empty - stage stays on its OpenRouter model", env_var)
+        return None
+    return AnthropicChainLLM(model, fallback, name)
+
 
 # ── Glossary loader ───────────────────────────────────────────────────────────
 
@@ -288,6 +380,51 @@ def _run_provider_judge(
     return verdict, reason
 
 
+_CODEBOOK_VERDICTS = {
+    # judge answer -> (verdict stored in DB, certainty, gate_uncertainty_reason)
+    "LEAD":      ("REAL_PROVIDER", "CERTAIN",   None),
+    "UNCERTAIN": ("REAL_PROVIDER", "UNCERTAIN", "judge_uncertain"),
+    "NOT_LEAD":  ("MISTAKE",       None,        None),
+}
+
+
+def _run_provider_judge_codebook(
+    decision: ProviderDecision,
+    llm: LLMClient,
+) -> tuple[str, str, str | None, str | None]:
+    """Codebook judge (PROVIDER_JUDGE_PROMPT=codebook): LEAD / UNCERTAIN / NOT_LEAD.
+
+    Returns (verdict, reason, certainty, gate_uncertainty_reason) with the same contract as the
+    buyer / traffic verticals: an UNCERTAIN lead is stored as a lead with certainty=UNCERTAIN so the
+    operator decides. Any judge failure is fail-safe: stored as UNCERTAIN / gate_api_error, not lost.
+    """
+    user = PROVIDER_JUDGE_CODEBOOK_USER_TEMPLATE.format(
+        username=decision.username or "anon",
+        text=(decision.text or "").replace("\n", " ").strip()[:500],
+        confidence=f"{decision.confidence:.2f}",
+        geo=", ".join(decision.geo) or "-",
+        methods=", ".join(decision.methods) or "-",
+        vertical=", ".join(decision.vertical) or "-",
+        company=decision.company or "-",
+        evidence_quote=(decision.evidence_quote or "")[:200],
+        rationale=(decision.rationale or "")[:200],
+    )
+    try:
+        llm.set_stage("provider_judge")
+        data, _ = llm.complete_json(PROVIDER_JUDGE_CODEBOOK_SYSTEM, user, max_tokens=200)
+        if not isinstance(data, dict):
+            raise ValueError(f"judge returned {type(data).__name__}, expected an object")
+        answer = str(data.get("verdict", "")).strip().upper()
+        reason = str(data.get("reason", "")).strip()
+        if answer not in _CODEBOOK_VERDICTS:
+            raise ValueError(f"unknown judge verdict {answer!r}")
+        verdict, certainty, gate_reason = _CODEBOOK_VERDICTS[answer]
+        return verdict, reason, certainty, gate_reason
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[provider] codebook judge failed (%s) - stored as UNCERTAIN/gate_api_error", exc)
+        return "REAL_PROVIDER", f"judge call failed: {exc}"[:300], "UNCERTAIN", "gate_api_error"
+
+
 def _merge_provider(
     decision: ProviderDecision,
     verdict: str | None,
@@ -315,9 +452,12 @@ class ProviderExtractor:
         llm: LLMClient,
         cfg: ProviderExtractionConfig | None = None,
         rag_index=None,
+        stage1_llm: LLMClient | None = None,
     ):
         self.glossary_index = GlossaryIndex(glossary)
         self.llm = llm
+        # Optional separate (cheaper/other) client for the stage-1 YES/NO call.
+        self.stage1_llm = stage1_llm
         self.cfg = cfg or ProviderExtractionConfig()
         self.rag_index = rag_index
 
@@ -401,8 +541,9 @@ class ProviderExtractor:
         # ── Step 2: Stage 1 micro-LLM (YES/NO) ───────────────────────────────
         if cfg.stage1_enabled:
             try:
-                self.llm.set_stage("provider_stage1_micro")
-                s1 = self.llm.complete(
+                s1_llm = self.stage1_llm or self.llm
+                s1_llm.set_stage("provider_stage1_micro")
+                s1 = s1_llm.complete(
                     _PROVIDER_STAGE1_SYSTEM,
                     _PROVIDER_STAGE1_USER_TEMPLATE.format(text=text),
                     max_tokens=10,
@@ -462,6 +603,10 @@ class ProviderExtractor:
         try:
             self.llm.set_stage("provider_full_prompt")
             data, raw = self.llm.complete_json(system, user, max_tokens=500)
+            if isinstance(data, list):   # some models answer with [{...}] instead of {...}
+                data = next((d for d in data if isinstance(d, dict)), None)
+            if not isinstance(data, dict):
+                raise ValueError("extractor did not return a JSON object")
         except Exception as exc:
             return ProviderDecision(
                 message_id           = target.message_id,
@@ -499,6 +644,7 @@ def classify_provider_message(
     timestamp:  Optional[datetime] = None,
     context:    Optional[list[Message]] = None,
     extractor: ProviderExtractor | None = None,
+    judge_llm: LLMClient | None = None,
 ) -> dict:
     """Classify one message through the PSP provider pipeline.
 
@@ -511,6 +657,8 @@ def classify_provider_message(
         username:   Optional sender handle.
         timestamp:  Optional message datetime.
         context:    Optional list of surrounding Message objects.
+        judge_llm:  Optional separate client for the judge stage (see
+                    make_provider_stage_llm("PROVIDER_JUDGE_MODEL")). Falls back to ``llm``.
 
     Returns:
         Flat JSON-serialisable dict (ProviderDecision.to_row() + is_provider bool).
@@ -565,12 +713,14 @@ def classify_provider_message(
 
     # ── Judge stage: independent second-pass validation ───────────────────────
     if cfg.judge_enabled:
-        # Optionally use a stronger model for the judge
-        judge_model = os.environ.get("PROVIDER_JUDGE_MODEL")
-        if judge_model:
-            llm.model = judge_model
-
-        verdict, judge_reason = _run_provider_judge(decision, llm)
+        # The judge may run on its own model via a dedicated client. Never mutate
+        # the shared ``llm.model`` here: it is shared by all threads and stages.
+        if cfg.judge_prompt == "codebook":
+            verdict, judge_reason, certainty, gate_reason = _run_provider_judge_codebook(decision, judge_llm or llm)
+            decision.certainty = certainty
+            decision.gate_uncertainty_reason = gate_reason
+        else:
+            verdict, judge_reason = _run_provider_judge(decision, judge_llm or llm)
         decision.verdict      = verdict
         decision.judge_reason = judge_reason
     else:

@@ -49,6 +49,13 @@ class ProviderDecision:
     judge_reason: str | None = None
     """One-sentence English explanation from the judge LLM."""
 
+    certainty: str | None = None
+    """CERTAIN | UNCERTAIN — set only by the codebook judge (PROVIDER_JUDGE_PROMPT=codebook).
+    Same meaning as in the buyer/traffic verticals: UNCERTAIN leads are stored but flagged for the operator."""
+
+    gate_uncertainty_reason: str | None = None
+    """'judge_uncertain' (judge said UNCERTAIN) | 'gate_api_error' (judge call failed, fail-safe)."""
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
     elapsed_ms:       float | None = None
     raw_llm_response: str   | None = None
@@ -70,6 +77,8 @@ class ProviderDecision:
             "confidence":          self.confidence,
             "verdict":             self.verdict,
             "judge_reason":        self.judge_reason,
+            "certainty":           self.certainty,
+            "gate_uncertainty_reason": self.gate_uncertainty_reason,
             "geo":                 ", ".join(self.geo),
             "methods":             ", ".join(self.methods),
             "vertical":            ", ".join(self.vertical),
@@ -129,6 +138,11 @@ class ProviderExtractionConfig:
     judge_enabled: bool = True
     """Run the independent judge LLM after is_provider=True decisions.
     Set False to skip the judge stage (faster, cheaper, lower precision)."""
+
+    judge_prompt: str = "legacy"
+    """'legacy' = old binary judge (REAL_PROVIDER / MISTAKE, no certainty).
+    'codebook' = judge written from the gold-standard codebook: LEAD / UNCERTAIN / NOT_LEAD,
+    sets certainty + gate_uncertainty_reason (env PROVIDER_JUDGE_PROMPT)."""
 
     # ── Excluded authors ──────────────────────────────────────────────────────
     excluded_authors: set[str] = field(default_factory=lambda: {
