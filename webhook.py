@@ -956,6 +956,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     pipeline,
     db_write_status, db_write_error,
     certainty, gate_uncertainty_reason,
+    is_merchant,
     classified_at
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
@@ -967,6 +968,7 @@ INSERT INTO {_TABLE_PREFIX}classified_messages_dirty (
     $19,
     $20, $21,
     $22, $23,
+    $24,
     NOW()
 )
 ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
@@ -991,6 +993,7 @@ ON CONFLICT ON CONSTRAINT {_TABLE_PREFIX}uq_group_message_leadtype DO UPDATE SET
     db_write_error        = EXCLUDED.db_write_error,
     certainty             = EXCLUDED.certainty,
     gate_uncertainty_reason = EXCLUDED.gate_uncertainty_reason,
+    is_merchant           = EXCLUDED.is_merchant,
     classified_at         = NOW()
 RETURNING id;
 """
@@ -1081,6 +1084,7 @@ async def _persist_traffic(group_id: Optional[int], result: dict) -> dict:
                 None,                                               # $21
                 result.get("certainty"),                            # $22 certainty
                 result.get("gate_uncertainty_reason"),              # $23 gate_uncertainty_reason
+                result.get("is_merchant"),                          # $24 is_merchant
             )
 
         result["db_write_status"] = "ok"

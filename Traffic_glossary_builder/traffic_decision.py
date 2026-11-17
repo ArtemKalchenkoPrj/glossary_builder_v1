@@ -53,6 +53,10 @@ class TrafficDecision:
     gate_uncertainty_reason: Optional[str] = None   # sms | infra | role_unclear | gate_api_error | ...
     gate_reason:             Optional[str] = None   # free-text explanation from the gate model
 
+    # ── is_merchant gate output (seeking_traffic leads only) ──────────────────
+    is_merchant:     Optional[bool] = None   # True = direct advertiser/owner; False = not proven; None = gate off / n/a / error
+    merchant_reason: Optional[str]  = None   # "[merchant gate model: basis] reason"
+
     # ── Pipeline tag (for DB) ─────────────────────────────────────────────────
     pipeline: str = "traffic"
 
@@ -78,6 +82,8 @@ class TrafficDecision:
             "certainty":          self.certainty,
             "gate_uncertainty_reason": self.gate_uncertainty_reason,
             "gate_reason":        self.gate_reason,
+            "is_merchant":        self.is_merchant,
+            "merchant_reason":    self.merchant_reason,
             "pipeline":           self.pipeline,
         }
 
@@ -145,3 +151,13 @@ class TrafficExtractionConfig:
 
     def gate_resolver_model(self) -> str:
         return os.environ.get("TRAFFIC_GATE_RESOLVER_MODEL") or "claude-sonnet-5-5"
+
+    # ── is_merchant gate (seeking_traffic leads, Anthropic model, read from ENV) ──
+    # TRAFFIC_MERCHANT_GATE_ENABLED — "1"/"true" turns it on (default: off -> is_merchant stays NULL)
+    # TRAFFIC_MERCHANT_GATE_MODEL   — default claude-haiku-5-5
+
+    def merchant_gate_enabled(self) -> bool:
+        return os.environ.get("TRAFFIC_MERCHANT_GATE_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+    def merchant_gate_model(self) -> str:
+        return os.environ.get("TRAFFIC_MERCHANT_GATE_MODEL") or "claude-haiku-5-5"

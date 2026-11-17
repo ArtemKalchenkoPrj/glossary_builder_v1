@@ -45,6 +45,7 @@ from .traffic_prompt import (
     _TRAFFIC_JUDGE_SYSTEM,
 )
 from .traffic_gate_prompt import TRAFFIC_GATE_SYSTEM, TRAFFIC_GATE_USER_TEMPLATE
+from .traffic_merchant_prompt import TRAFFIC_MERCHANT_SYSTEM, TRAFFIC_MERCHANT_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +578,35 @@ def _resolve_mismatch(decision: TrafficDecision, text: str, username: Optional[s
 # Public entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# is_merchant gate (runs last, seeking_traffic leads only)
+# ---------------------------------------------------------------------------
+#
+#  True  = the author explicitly presents himself as the owner / direct advertiser.
+#  False = anything else (intermediary or no self-description) - precision first.
+#  NULL  = gate off, not a seeking_traffic lead, or API/parse error (never guessed).
+#  Never changes is_lead / verdict / certainty.
+
+_MERCHANT_BASES = ("self_owner", "self_intermediary", "no_self_description")
+
+
+def _apply_merchant_gate(decision: TrafficDecision, text: str, username: Optional[str],
+                         cfg: TrafficExtractionConfig) -> None:
+    model = cfg.merchant_gate_model()
+    user = TRAFFIC_MERCHANT_USER_TEMPLATE.format(username=username or "unknown", text=text)
+    result = _call_llm_anthropic(system=TRAFFIC_MERCHANT_SYSTEM, user=user, max_tokens=300, model=model)
+    value = str(result.get("is_merchant", "")).strip().lower()
+    if result.get("_error") or value not in ("true", "false"):
+        logger.warning("traffic_classifier: merchant gate error message_id=%s: %s",
+                       decision.message_id, result.get("_error") or f"bad value {result.get('is_merchant')!r}")
+        decision.is_merchant = None
+        decision.merchant_reason = f"[merchant gate {model} error] {result.get('_error') or 'bad value'}"[:300]
+        return
+    decision.is_merchant = value == "true"
+    basis = result.get("basis") if result.get("basis") in _MERCHANT_BASES else "?"
+    decision.merchant_reason = f"[merchant gate {model}: {basis}] {result.get('reason') or ''}".strip()[:300]
+
+
 def classify_traffic_message(
     text: str,
     glossary: list[dict],
@@ -611,6 +641,11 @@ def classify_traffic_message(
     )
 
     def _done(reason: str) -> dict:
+        if (cfg.merchant_gate_enabled() and decision.is_lead
+                and decision.verdict == "TRAFFIC_LEAD" and decision.lead_type == "seeking_traffic"):
+            _apply_merchant_gate(decision, text, username, cfg)
+            logger.info("traffic_classifier: merchant gate message_id=%s is_merchant=%s %s",
+                        message_id, decision.is_merchant, decision.merchant_reason)
         decision.elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug("traffic_classifier: DONE message_id=%s reason=%s elapsed=%.0fms",
                      message_id, reason, decision.elapsed_ms)
@@ -775,7 +810,14 @@ def describe_traffic_config(cfg: TrafficExtractionConfig) -> list[tuple[str, str
         lines.append(("Certainty gate", "OFF (TRAFFIC_GATE_ENABLED not set) - certainty=NULL, "
                                         "extractor/judge mismatches are dropped"))
 
-    uses_anthropic = bool(anthropic_model) or cfg.gate_enabled()
+    if cfg.merchant_gate_enabled():
+        lines.append(("Merchant gate", "ON (TRAFFIC_MERCHANT_GATE_ENABLED) - seeking_traffic leads only"))
+        lines.append(("Merchant gate model", _anthropic(cfg.merchant_gate_model())))
+        lines.append(("Merchant gate: on error", "is_merchant = NULL"))
+    else:
+        lines.append(("Merchant gate", "OFF (TRAFFIC_MERCHANT_GATE_ENABLED not set) - is_merchant=NULL"))
+
+    uses_anthropic = bool(anthropic_model) or cfg.gate_enabled() or cfg.merchant_gate_enabled()
     if uses_anthropic and not os.environ.get("ANTHROPIC_API_KEY"):
         lines.append(("WARNING", "ANTHROPIC_API_KEY is not set - Anthropic calls will fail"))
     return lines
