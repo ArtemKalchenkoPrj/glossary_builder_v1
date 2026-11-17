@@ -24,6 +24,8 @@ import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
+from recovery_stopwords import CHARGEBACK_STOP_WORDS, RECOVERY_STOP_WORDS
+
 # ---------------------------------------------------------------------------
 # Default DB path
 # ---------------------------------------------------------------------------
@@ -139,16 +141,9 @@ STOP_WORDS: list[str] = [
     "flash usdt",
     "flash coins",
     "fake btc",
-    # Recovery / database scam
-    "recovery",
-    "recover",          # recover worldwide / recovers (covers "recovery" too)
-    "rekaver", "rekover", "rekavery", "recaver", "recavery", "ricovery",
-    "рековери", "рекавери", "рекавер", "рековер", "рекаверь",
-    "chardzeback", "chardgeback", "charge back", "chargeback",
-    "чардж", "чарджбэк", "чарджбек", "чарджбэки",
-    "recovery leads",
-    "database leads",
-    "recovery chargeback",
+    # Recovery / database scam — shared list, see recovery_stopwords.py
+    *RECOVERY_STOP_WORDS,
+    *CHARGEBACK_STOP_WORDS,
     # PSP под видом трафика
     "платежное решение",
     "платёжное решение",

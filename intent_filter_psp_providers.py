@@ -31,6 +31,8 @@ import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
+from recovery_stopwords import RECOVERY_STOP_WORDS
+
 
 # Path to the provider glossary DB built by run_provider_glossary.py.
 # Resolved relative to this file so it works regardless of cwd.
@@ -83,7 +85,12 @@ ANTI_SIGNALS: list[str] = [
     "подключайся через официального представителя",
     "подключу на площадку",
     "подключение к площадке",
-    "подключу к площадке"
+    "подключу к площадке",
+
+    # Recovery / database scam — shared list, see recovery_stopwords.py
+    # (chargeback variants are intentionally NOT banned here: "no chargebacks"
+    #  is a normal selling point of a real PSP)
+    *RECOVERY_STOP_WORDS,
 
     # Продаж акаунтів
     "wts/sell",
