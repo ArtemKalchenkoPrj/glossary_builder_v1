@@ -38,6 +38,13 @@ from typing import Optional
 from glossary_builder.llm import LLMClient
 
 from .traffic_decision import TrafficDecision, TrafficExtractionConfig
+from .traffic_type import (
+    TRAFFIC_TYPE_DROP,
+    apply_traffic_type_to_template,
+    collapse_traffic_type,
+    normalize_traffic_types,
+    traffic_type_mode,
+)
 from .traffic_prompt import (
     _TRAFFIC_STAGE1_SYSTEM,
     TRAFFIC_DEFINITION,
@@ -400,7 +407,11 @@ def _run_full_llm(text: str, username: Optional[str], llm: LLMClient,
                   glossary_terms: list[str]) -> dict:
     """Full LLM extraction: returns structured dict with is_lead, lead_type, etc."""
     from vertical_enum import VERTICAL_RULES
-    system = _TRAFFIC_SYSTEM_TEMPLATE.format(
+    template = _TRAFFIC_SYSTEM_TEMPLATE
+    if traffic_type_mode() != "off":
+        # codebook block + "traffic_type" JSON field; with the mode off the prompt is byte-identical to before
+        template = apply_traffic_type_to_template(template)
+    system = template.format(
         traffic_definition=TRAFFIC_DEFINITION,
         vertical_rules=VERTICAL_RULES,
     )
@@ -700,8 +711,27 @@ def classify_traffic_message(
     decision.evidence_quote = ext.get("evidence_quote")
     decision.rationale      = ext.get("rationale")
 
+    # ── traffic_type (extractor annotation) ──────────────────────────────────
+    # Fail-open: a missing / invalid annotation never drops anything.
+    mode = cfg.traffic_type_mode()
+    if mode != "off":
+        decision.traffic_type_list = normalize_traffic_types(ext.get("traffic_type"))
+        decision.traffic_type = collapse_traffic_type(decision.traffic_type_list)
+
     if not decision.is_lead:
         return _done("llm_miss")
+
+    if mode != "off" and decision.traffic_type in TRAFFIC_TYPE_DROP:
+        if mode == "enforce":
+            logger.info("traffic_classifier: [traffic_type] dropped message_id=%s types=%s",
+                        message_id, decision.traffic_type_list)
+            decision.is_lead = False
+            decision.verdict = "MISTAKE"
+            decision.rationale = (f"[traffic_type={decision.traffic_type}: not routed] "
+                                  + (decision.rationale or ""))
+            return _done("traffic_type_drop")
+        logger.info("traffic_classifier: [traffic_type] would_drop message_id=%s types=%s (shadow)",
+                    message_id, decision.traffic_type_list)
 
     # ── Stage 6: Judge ────────────────────────────────────────────────────────
     gate_on = cfg.gate_enabled()
@@ -816,6 +846,14 @@ def describe_traffic_config(cfg: TrafficExtractionConfig) -> list[tuple[str, str
         lines.append(("Merchant gate: on error", "is_merchant = NULL"))
     else:
         lines.append(("Merchant gate", "OFF (TRAFFIC_MERCHANT_GATE_ENABLED not set) - is_merchant=NULL"))
+
+    tt_mode = cfg.traffic_type_mode()
+    if tt_mode == "off":
+        lines.append(("traffic_type", "OFF (TRAFFIC_TYPE_MODE not set) - extractor prompt unchanged"))
+    elif tt_mode == "shadow":
+        lines.append(("traffic_type", "SHADOW - annotates and logs '[traffic_type] would_drop', drops nothing"))
+    else:
+        lines.append(("traffic_type", "ENFORCE - database-only / infra-only messages are not leads (verdict MISTAKE)"))
 
     uses_anthropic = bool(anthropic_model) or cfg.gate_enabled() or cfg.merchant_gate_enabled()
     if uses_anthropic and not os.environ.get("ANTHROPIC_API_KEY"):

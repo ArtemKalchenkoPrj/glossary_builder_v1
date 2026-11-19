@@ -70,9 +70,12 @@ DB target: `classified_messages_dirty` (lead_type="psp_provider")
 Classifier: `Traffic_glossary_builder/traffic_classifier.py`
 Keyword filter: `intent_filter_traffic.py`
 Stage1: micro-LLM YES/NO
-Extractor: structured fields + traffic_source, pricing_model
+Extractor: structured fields + traffic_source, pricing_model, `traffic_type` (live_traffic / database / infra / unclear / none)
 Judge: TRAFFIC_PROVIDER / TRAFFIC_LEAD / MISTAKE
 DB target: `classified_messages_dirty` (pipeline="traffic")
+Optional (env, off by default): `TRAFFIC_TYPE_MODE=off|shadow|enforce` — enforce: messages offering only a database /
+only infra are not leads (MISTAKE, judge skipped); `TRAFFIC_GATE_ENABLED` (certainty gate), `TRAFFIC_MERCHANT_GATE_ENABLED`.
+See [docs/04](docs/04-llm-classification.md).
 
 ### 4. Crypto Cards — `Crypto_cards_glossary_builder/`
 

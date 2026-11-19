@@ -150,6 +150,19 @@ flowchart LR
 - `is_lead`, `lead_type` (traffic_provider / seeking_traffic), `confidence` (high/medium/low)
 - `vertical[]`, `traffic_source[]`, `geo[]`, `pricing_model[]`
 - `evidence_quote`, `rationale`
+- `traffic_type[]` — что продаёт/ищет автор: `live_traffic` / `database` / `infra` / `unclear` / `none`
+  (включается `TRAFFIC_TYPE_MODE`, см. ниже)
+
+**traffic_type** ([traffic_type.py](../Traffic_glossary_builder/traffic_type.py)): поле экстрактора по кодбуку
+v1.1 (`impovements/seeking_traffic/traffic_type/gold/codebook_tt_v1.md`). Блок с правилами вставляется в промпт
+экстрактора, отдельного вызова LLM нет. Список сворачивается по политике P2: если есть `live_traffic`, сообщение
+остаётся в живой ленте (даже смесь с БД/инфрой); иначе `database` > `infra`. В режиме `enforce` сообщения, где
+предлагаются **только** БД или **только** инфра, не лиды: `is_lead=False`, `verdict=MISTAKE`, судья не вызывается,
+в БД ничего не пишется (`_persist_traffic` пишет только TRAFFIC_*). `unclear` и `none` решение не меняют.
+Отсутствующая или невалидная аннотация ничего не отсекает (fail-open).
+- `TRAFFIC_TYPE_MODE`: `off` (по умолчанию, промпт экстрактора не меняется) / `shadow` (аннотирует и логирует
+  `[traffic_type] would_drop`, ничего не отсекает) / `enforce`. Откат: вернуть `off`.
+- Поля в `TrafficDecision`: `traffic_type_list` (список), `traffic_type` (свёрнутое значение).
 
 **Judge:** `verdict`: TRAFFIC_PROVIDER / TRAFFIC_LEAD / MISTAKE
 - Промпт: `_TRAFFIC_JUDGE_SYSTEM`
@@ -262,6 +275,7 @@ PROVIDER_JUDGE_MODEL=openai/gpt-4.1-mini     # Judge (optional override)
 TRAFFIC_OPENROUTER_API_KEY=sk-or-...
 TRAFFIC_STAGE1_MODEL=openai/gpt-4.1-mini
 TRAFFIC_JUDGE_MODEL=openai/gpt-4.1-mini
+TRAFFIC_TYPE_MODE=off                        # off | shadow | enforce (БД/инфра не лиды), см. раздел Traffic
 
 # Crypto Cards pipeline
 CRYPTO_CARDS_OPENROUTER_API_KEY=sk-or-...

@@ -57,6 +57,10 @@ class TrafficDecision:
     is_merchant:     Optional[bool] = None   # True = direct advertiser/owner; False = not proven; None = gate off / n/a / error
     merchant_reason: Optional[str]  = None   # "[merchant gate model: basis] reason"
 
+    # ── traffic_type annotation (live_traffic / database / infra / unclear / none) ──
+    traffic_type_list: list[str] = field(default_factory=list)   # raw extractor list (normalized)
+    traffic_type:      Optional[str] = None                      # collapsed (policy P2); None = no annotation
+
     # ── Pipeline tag (for DB) ─────────────────────────────────────────────────
     pipeline: str = "traffic"
 
@@ -84,6 +88,8 @@ class TrafficDecision:
             "gate_reason":        self.gate_reason,
             "is_merchant":        self.is_merchant,
             "merchant_reason":    self.merchant_reason,
+            "traffic_type_list":  self.traffic_type_list,
+            "traffic_type":       self.traffic_type,
             "pipeline":           self.pipeline,
         }
 
@@ -161,3 +167,11 @@ class TrafficExtractionConfig:
 
     def merchant_gate_model(self) -> str:
         return os.environ.get("TRAFFIC_MERCHANT_GATE_MODEL") or "claude-haiku-5-5"
+
+    # ── traffic_type (extractor annotation: live_traffic / database / infra) ──
+    # TRAFFIC_TYPE_MODE — off (default: extractor prompt unchanged) | shadow (annotate + log, drop nothing)
+    #                     | enforce (messages that offer ONLY a database / ONLY infra are not leads)
+
+    def traffic_type_mode(self) -> str:
+        from .traffic_type import traffic_type_mode
+        return traffic_type_mode()
