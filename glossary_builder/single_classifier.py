@@ -366,8 +366,14 @@ def classify_single_message(
     bio_block: str = "",
     stage1_llm: Optional[LLMClient] = None,
     gate_llm: Optional[LLMClient] = None,
+    judge_llm: Optional[LLMClient] = None,
 ) -> dict:
     """Classify one message through the full extract → judge pipeline.
+
+    ``judge_llm`` is a dedicated client for the judge stage. When omitted, the
+    legacy behaviour applies: JUDGE_MODEL (if set) is written into the shared
+    ``llm.model`` — which also switches the extractor. The webhook always passes
+    ``judge_llm`` so the extractor and judge models stay independent.
 
     Runs the same two-stage logic as the ``extract-leads`` + ``judge-leads``
     CLI commands, but for a single message with no file I/O.
@@ -474,11 +480,13 @@ def classify_single_message(
         logger.info("[buyer] stage1 passed message_id=%s", message_id)
 
     # ── Judge: independent verdict ────────────────────────────────────────
-    judge_model = os.getenv("JUDGE_MODEL")
-    if judge_model:
-        llm.model = judge_model
+    if judge_llm is None:
+        # Legacy path (scripts): mutates the shared client, see docstring.
+        judge_model = os.getenv("JUDGE_MODEL")
+        if judge_model:
+            llm.model = judge_model
 
-    verdict, judge_reason, uncertainty_reason = _run_judge(decision, llm, judge_system)
+    verdict, judge_reason, uncertainty_reason = _run_judge(decision, judge_llm or llm, judge_system)
 
     # ── Gate v5: certainty check (haiku) ──────────────────────────────────
     certainty: str | None = None

@@ -180,6 +180,7 @@ class _AppState:
     judge_system: str
     buyer_stage1_llm: LLMClient | None = None
     buyer_gate_llm: LLMClient | None = None
+    buyer_judge_llm: LLMClient | None = None       # JUDGE_MODEL on its own client (never mutates _state.llm)
 
     # Provider pipeline
     provider_glossary: list[dict]
@@ -426,6 +427,18 @@ async def lifespan(app: FastAPI):
     logger.info("[startup] rag=enabled path=%s examples=%d", buyer_rag_path, _state.rag_index.count())
 
     _state.llm = LLMClient()
+    # Extractor model: BUYER_EXTRACTOR_MODEL, otherwise GLOSSARY_MODEL (LLMClient default).
+    buyer_extractor_model = (os.getenv("BUYER_EXTRACTOR_MODEL") or "").strip()
+    if buyer_extractor_model:
+        _state.llm.model = buyer_extractor_model
+    logger.info("[startup] buyer_extractor_llm=%s (%s)", _state.llm.model,
+                "BUYER_EXTRACTOR_MODEL" if buyer_extractor_model else "GLOSSARY_MODEL / default")
+    # Judge: separate client so JUDGE_MODEL no longer overwrites the extractor model.
+    buyer_judge_model = (os.getenv("JUDGE_MODEL") or "").strip()
+    if buyer_judge_model:
+        _state.buyer_judge_llm = LLMClient()
+        _state.buyer_judge_llm.model = buyer_judge_model
+    logger.info("[startup] buyer_judge_llm=%s", buyer_judge_model or "(same as extractor)")
     _state.cfg = LeadExtractionConfig()
 
     if buyer_prompt_version not in BY_VERSION:
@@ -1345,6 +1358,7 @@ async def classify(body: ClassifyRequest) -> dict:
                     bio_block=bio_block,
                     stage1_llm=_state.buyer_stage1_llm,
                     gate_llm=_state.buyer_gate_llm,
+                    judge_llm=_state.buyer_judge_llm,
                 ),
                 asyncio.to_thread(
                     classify_provider_message,
@@ -1740,7 +1754,8 @@ async def debug() -> dict:
 
     return {
         "models": {
-            "buyer_llm":           _state.llm.model,
+            "buyer_llm":           _state.llm.model,   # extractor
+            "buyer_judge_llm":     _state.buyer_judge_llm.model if _state.buyer_judge_llm else _state.llm.model,
             "buyer_stage1_llm":    _state.buyer_stage1_llm.model if _state.buyer_stage1_llm else None,
             "buyer_gate_llm":      _state.buyer_gate_llm.model if _state.buyer_gate_llm else None,
             "provider_llm":        _state.provider_llm.model,
